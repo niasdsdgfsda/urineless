@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"image"
+	"image/gif"
 	"io"
 	"net/http"
 	"os"
@@ -14,7 +14,6 @@ import (
 
 	"gioui.org/font"
 	"gioui.org/layout"
-	"gioui.org/op/paint"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 	"gioui.org/x/explorer"
@@ -40,14 +39,7 @@ func (a *App) attClick(att *chat.Attachment) *widget.Clickable {
 	return c
 }
 
-func (a *App) imageOp(att *chat.Attachment) paint.ImageOp {
-	op, ok := a.imgOps[att]
-	if !ok {
-		op = paint.NewImageOp(att.Image)
-		a.imgOps[att] = op
-	}
-	return op
-}
+
 
 func statusText(att *chat.Attachment) string {
 	if att.Sticker {
@@ -107,22 +99,19 @@ func (a *App) attachmentBody(att *chat.Attachment) layout.Widget {
 }
 
 func (a *App) imageView(gtx layout.Context, att *chat.Attachment) layout.Dimensions {
-	maxSize := gtx.Dp(320)
+	maxSize := gtx.Dp(540)
 	if att.Sticker {
-		maxSize = gtx.Dp(150)
+		maxSize = gtx.Dp(340)
 	}
 	maxW := min(gtx.Constraints.Max.X, maxSize)
 	gtx.Constraints = layout.Constraints{Max: image.Pt(maxW, maxSize)}
 	click := a.attClick(att)
 	if click.Clicked(gtx) {
-		a.viewer.Show(a.imageOp(att), att.Image.Bounds().Size())
+		a.viewer.Show(att.Op, att.Image.Bounds().Size())
 	}
+	dims := renderImage(gtx, func() { a.window.Invalidate() }, &att.Op, att.Image, att.Animated, att.Frames, &att.Ops, &att.FrameIdx, &att.LastUpdate)
 	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return widget.Image{
-			Src:   a.imageOp(att),
-			Fit:   widget.ScaleDown,
-			Scale: gtx.Metric.PxPerDp,
-		}.Layout(gtx)
+		return dims
 	})
 }
 
@@ -349,17 +338,21 @@ func (a *App) sendImageKind(conv *chat.Conversation, client *irc.Client, name st
 
 // sendImageURL sends a direct media link and immediately renders it locally.
 // The caller holds a.mu, matching deliver and sendImageFile.
-func (a *App) sendImageURL(conv *chat.Conversation, client *irc.Client, u string, preview image.Image) error {
+func (a *App) sendImageURL(conv *chat.Conversation, client *irc.Client, u string, preview image.Image, animated *gif.GIF, frames []image.Image) error {
 	att := chat.ParseAttachment(u)
 	if att == nil {
 		return fmt.Errorf("ununterstützter Bild-Link")
 	}
 	if preview != nil {
-		setCachedImage(u, preview)
+		setCachedImage(u, preview, animated, frames, nil)
 		att.Image = preview
+		att.Animated = animated
+		att.Frames = frames
 		att.State = chat.AttReady
-	} else if cached, ok := getCachedImage(u); ok {
-		att.Image = cached
+	} else if cachedImg, cachedAnim, cachedFrames, _, ok := getCachedImage(u); ok {
+		att.Image = cachedImg
+		att.Animated = cachedAnim
+		att.Frames = cachedFrames
 		att.State = chat.AttReady
 	}
 	att.Sticker = true
@@ -376,8 +369,10 @@ func (a *App) receiveURL(att *chat.Attachment) {
 	if att.State == chat.AttLoading {
 		return
 	}
-	if cached, ok := getCachedImage(att.URL); ok {
-		att.Image = cached
+	if cachedImg, cachedAnim, cachedFrames, _, ok := getCachedImage(att.URL); ok {
+		att.Image = cachedImg
+		att.Animated = cachedAnim
+		att.Frames = cachedFrames
 		att.State = chat.AttReady
 		return
 	}
@@ -385,7 +380,7 @@ func (a *App) receiveURL(att *chat.Attachment) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		img, err := downloadImageURL(ctx, att.URL)
+		img, animated, frames, err := downloadImageURL(ctx, att.URL)
 
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -394,35 +389,35 @@ func (a *App) receiveURL(att *chat.Attachment) {
 			att.State, att.Err = chat.AttFailed, err.Error()
 			return
 		}
-		att.Image, att.State = img, chat.AttReady
+		att.Image, att.Animated, att.Frames, att.State = img, animated, frames, chat.AttReady
 	}()
 }
 
-func downloadImageURL(ctx context.Context, u string) (image.Image, error) {
-	if cached, ok := getCachedImage(u); ok {
-		return cached, nil
+func downloadImageURL(ctx context.Context, u string) (image.Image, *gif.GIF, []image.Image, error) {
+	if cachedImg, cachedAnim, cachedFrames, _, ok := getCachedImage(u); ok {
+		return cachedImg, cachedAnim, cachedFrames, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	req.Header.Set("User-Agent", "urineless/0.1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, nil, nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+	img, animated, frames := decodeImage(data)
+	if img == nil {
+		return nil, nil, nil, errors.New("invalid image")
 	}
-	setCachedImage(u, img)
-	return img, nil
+	setCachedImage(u, img, animated, frames, nil)
+	return img, animated, frames, nil
 }

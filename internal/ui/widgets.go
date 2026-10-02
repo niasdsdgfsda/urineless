@@ -205,7 +205,7 @@ func StickerPost(gtx layout.Context, th *material.Theme, m chat.Message, showNam
 		}
 		body = l.Layout
 	}
-	maxW := min(gtx.Constraints.Max.X, gtx.Dp(150))
+	maxW := min(gtx.Constraints.Max.X, gtx.Dp(320))
 	gtx.Constraints.Max.X = maxW
 	gtx.Constraints.Min = image.Point{}
 	alignment := layout.Start

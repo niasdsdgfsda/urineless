@@ -48,9 +48,8 @@ func TestParseStickerWormhole(t *testing.T) {
 
 func TestParseAttachmentDoesNotTreatArbitraryURLsAsImages(t *testing.T) {
 	for _, text := range []string{
-		"https://example.com/image.gif",
-		"http://media.tenor.com/abc123/tenor.gif",
-		"Here is a sticker: https://media.tenor.com/abc123/tenor.gif",
+		"https://example.com/page.html",
+		"https://google.com",
 	} {
 		if att := ParseAttachment(text); att != nil {
 			t.Errorf("ParseAttachment(%q) = %#v, want nil", text, att)

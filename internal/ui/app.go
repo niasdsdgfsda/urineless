@@ -11,7 +11,6 @@ import (
 	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
-	"gioui.org/op/paint"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 	"gioui.org/x/explorer"
@@ -59,7 +58,6 @@ type App struct {
 	expl      *explorer.Explorer
 	imgBtn    widget.Clickable
 	attClicks map[*chat.Attachment]*widget.Clickable
-	imgOps    map[*chat.Attachment]paint.ImageOp
 
 	// Sticker / Viewer / Paste
 	viewer     viewer
@@ -79,7 +77,6 @@ func newApp(w *app.Window) *App {
 		msgLists:  map[string]*widget.List{},
 		expl:      explorer.NewExplorer(w),
 		attClicks: map[*chat.Attachment]*widget.Clickable{},
-		imgOps:    map[*chat.Attachment]paint.ImageOp{},
 		picker:    newStickerPicker(),
 	}
 	_ = InitClipboard()
@@ -268,7 +265,6 @@ func (a *App) startConnect() {
 		a.store = chat.NewStore()
 		a.msgLists = map[string]*widget.List{}
 		a.attClicks = map[*chat.Attachment]*widget.Clickable{}
-		a.imgOps = map[*chat.Attachment]paint.ImageOp{}
 		a.store.Sys(a.store.Server(), "Verbinde mit "+server+" …")
 		a.focusInput = true
 		go a.pump(c)

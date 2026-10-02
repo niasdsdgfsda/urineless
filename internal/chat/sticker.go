@@ -1,10 +1,14 @@
 package chat
 
 import (
+	"bytes"
 	"image"
-	_ "image/gif"
+	"image/color"
+	"image/draw"
+	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,9 +31,11 @@ func StickerDir() string { return stickerDir() }
 
 // Sticker ist ein lokaler Sticker mit geladenem Vorschaubild.
 type Sticker struct {
-	Name  string
-	Path  string
-	Image image.Image
+	Name     string
+	Path     string
+	Image    image.Image
+	Animated *gif.GIF
+	Frames   []image.Image
 }
 
 // ResolveSticker findet eine Sticker-Datei anhand eines Namens.
@@ -95,12 +101,77 @@ func StickerList() []Sticker {
 		if err != nil {
 			continue
 		}
-		img, _, err := image.Decode(f)
+		data, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
 			continue
 		}
-		out = append(out, Sticker{Name: name, Path: p, Image: img})
+		img, animated, frames := decodeImage(data)
+		if img == nil {
+			continue
+		}
+		out = append(out, Sticker{Name: name, Path: p, Image: img, Animated: animated, Frames: frames})
+	}
+	return out
+}
+
+func decodeImage(data []byte) (image.Image, *gif.GIF, []image.Image) {
+	if g, err := gif.DecodeAll(bytes.NewReader(data)); err == nil && len(g.Image) > 0 {
+		if len(g.Image) == 1 {
+			return g.Image[0], nil, nil
+		}
+		frames := composeGIF(g)
+		return frames[0], g, frames
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err == nil {
+		return img, nil, nil
+	}
+	return nil, nil, nil
+}
+
+func composeGIF(g *gif.GIF) []image.Image {
+	if len(g.Image) == 0 {
+		return nil
+	}
+	bounds := g.Image[0].Bounds()
+	if bounds.Empty() {
+		bounds = image.Rect(0, 0, g.Config.Width, g.Config.Height)
+	}
+	if bounds.Empty() {
+		bounds = image.Rect(0, 0, 100, 100)
+	}
+
+	out := make([]image.Image, len(g.Image))
+	canvas := image.NewRGBA(bounds)
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.Transparent}, image.Point{}, draw.Src)
+
+	var prevCanvas *image.RGBA
+
+	for i, srcImg := range g.Image {
+		if i > 0 && len(g.Disposal) > i-1 && g.Disposal[i-1] == gif.DisposalPrevious {
+			if prevCanvas != nil {
+				draw.Draw(canvas, canvas.Bounds(), prevCanvas, image.Point{}, draw.Src)
+			}
+		} else {
+			prevCanvas = image.NewRGBA(bounds)
+			draw.Draw(prevCanvas, canvas.Bounds(), canvas, image.Point{}, draw.Src)
+		}
+
+		draw.Draw(canvas, srcImg.Bounds(), srcImg, srcImg.Bounds().Min, draw.Over)
+
+		frame := image.NewRGBA(bounds)
+		draw.Draw(frame, bounds, canvas, image.Point{}, draw.Src)
+		out[i] = frame
+
+		if len(g.Disposal) > i {
+			switch g.Disposal[i] {
+			case gif.DisposalBackground:
+				draw.Draw(canvas, srcImg.Bounds(), &image.Uniform{color.Transparent}, image.Point{}, draw.Src)
+			case gif.DisposalPrevious:
+				// handled in next iteration
+			}
+		}
 	}
 	return out
 }

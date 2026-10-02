@@ -2,10 +2,14 @@ package chat
 
 import (
 	"image"
+	"image/gif"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+	"time"
+
+	"gioui.org/op/paint"
 )
 
 type AttachState int
@@ -20,14 +24,20 @@ const (
 )
 
 type Attachment struct {
-	Code     string
-	Name     string
-	Outgoing bool
-	Sticker  bool
-	State    AttachState
-	Err      string
-	Image    image.Image
-	URL      string
+	Code       string
+	Name       string
+	Outgoing   bool
+	Sticker    bool
+	State      AttachState
+	Err        string
+	Image      image.Image
+	Animated   *gif.GIF
+	Frames     []image.Image
+	Op         paint.ImageOp
+	Ops        []paint.ImageOp
+	FrameIdx   int
+	LastUpdate time.Time
+	URL        string
 }
 
 var wormholeRe = regexp.MustCompile(`^\[wormhole\] (\d+(?:-[a-z]+)+) (.{1,200})$`)
@@ -90,13 +100,16 @@ func ParseAttachment(text string) *Attachment {
 			host = strings.ToLower(pu.Hostname())
 		}
 		tenorHost := isTenorMediaHost(host)
-		if err == nil && pu.Scheme == "https" && (imageHosts[host] || tenorHost) {
+		if err == nil && (pu.Scheme == "https" || pu.Scheme == "http") {
 			if tenorHost && pu.Path != "" && pu.Path != "/" {
 				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
 			}
-			switch strings.ToLower(path.Ext(pu.Path)) {
-			case ".gif", ".jpeg", ".jpg", ".png", ".webp":
-				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: isStickerURL(t), State: AttIdle}
+			ext := strings.ToLower(path.Ext(pu.Path))
+			lowerT := strings.ToLower(t)
+			if ext == ".gif" || ext == ".jpeg" || ext == ".jpg" || ext == ".png" || ext == ".webp" || ext == ".img" ||
+				strings.Contains(lowerT, ".gif") || strings.Contains(lowerT, ".png") || strings.Contains(lowerT, ".jpg") ||
+				strings.Contains(lowerT, "img?") || strings.Contains(lowerT, "image") {
+				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
 			}
 		}
 	}
@@ -104,24 +117,11 @@ func ParseAttachment(text string) *Attachment {
 }
 
 func isStickerURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return isTenorMediaHost(host) || host == "nekos.best" || host == "gifcities.org" || host == "blob.gifcities.org" || host == "web.archive.org"
+	return true
 }
 
 func (a *Attachment) AutoLoad() bool {
-	if a.URL == "" {
-		return false
-	}
-	u, err := url.Parse(a.URL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return autoLoadHosts[host] || isTenorMediaHost(host)
+	return a.URL != ""
 }
 
 func isTenorMediaHost(host string) bool {
