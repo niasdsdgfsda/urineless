@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -47,6 +50,15 @@ func (a *App) imageOp(att *chat.Attachment) paint.ImageOp {
 }
 
 func statusText(att *chat.Attachment) string {
+	if att.Sticker {
+		switch att.State {
+		case chat.AttLoading:
+			return "lädt …"
+		case chat.AttFailed:
+			return "Fehler: " + att.Err
+		}
+		return ""
+	}
 	switch att.State {
 	case chat.AttWaiting:
 		return "Wartet auf Abholung · " + att.Code
@@ -65,7 +77,14 @@ func (a *App) attachmentBody(att *chat.Attachment) layout.Widget {
 	return func(gtx layout.Context) layout.Dimensions {
 		click := a.attClick(att)
 		if click.Clicked(gtx) && att.Image == nil && att.State != chat.AttLoading {
-			a.receive(att)
+			if att.URL != "" {
+				a.receiveURL(att)
+			} else {
+				a.receive(att)
+			}
+		}
+		if att.URL != "" && att.Image == nil && att.State == chat.AttIdle && att.AutoLoad() {
+			a.receiveURL(att)
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -88,20 +107,34 @@ func (a *App) attachmentBody(att *chat.Attachment) layout.Widget {
 }
 
 func (a *App) imageView(gtx layout.Context, att *chat.Attachment) layout.Dimensions {
-	maxW := min(gtx.Constraints.Max.X, gtx.Dp(320))
-	gtx.Constraints = layout.Constraints{Max: image.Pt(maxW, gtx.Dp(320))}
-	return widget.Image{
-		Src:   a.imageOp(att),
-		Fit:   widget.ScaleDown,
-		Scale: gtx.Metric.PxPerDp, // 1 Bildpixel = 1 Bildschirmpixel
-	}.Layout(gtx)
+	maxSize := gtx.Dp(320)
+	if att.Sticker {
+		maxSize = gtx.Dp(150)
+	}
+	maxW := min(gtx.Constraints.Max.X, maxSize)
+	gtx.Constraints = layout.Constraints{Max: image.Pt(maxW, maxSize)}
+	click := a.attClick(att)
+	if click.Clicked(gtx) {
+		a.viewer.Show(a.imageOp(att), att.Image.Bounds().Size())
+	}
+	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return widget.Image{
+			Src:   a.imageOp(att),
+			Fit:   widget.ScaleDown,
+			Scale: gtx.Metric.PxPerDp,
+		}.Layout(gtx)
+	})
 }
 
 func (a *App) placeholder(gtx layout.Context, att *chat.Attachment, click *widget.Clickable) layout.Dimensions {
 	gtx.Constraints.Min.X = min(gtx.Dp(200), gtx.Constraints.Max.X)
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			l := material.Body2(a.th, "Bild: "+att.Name)
+			label := "Bild: " + att.Name
+			if att.Sticker {
+				label = "Sticker"
+			}
+			l := material.Body2(a.th, label)
 			l.Font.Weight = font.Bold
 			return l.Layout(gtx)
 		}),
@@ -110,7 +143,11 @@ func (a *App) placeholder(gtx layout.Context, att *chat.Attachment, click *widge
 				return layout.Dimensions{}
 			}
 			return layout.Inset{Top: 6, Bottom: 4}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				b := material.Button(a.th, click, "Bild laden")
+				label := "Bild laden"
+				if att.Sticker {
+					label = "Sticker laden"
+				}
+				b := material.Button(a.th, click, label)
 				b.Background = colorLavender
 				b.CornerRadius = 14
 				b.Inset = layout.Inset{Top: 6, Bottom: 6, Left: 14, Right: 14}
@@ -153,6 +190,21 @@ func (a *App) note(conv *chat.Conversation, text string) {
 	a.window.Invalidate()
 }
 
+// pasteImageFromClipboard holt ein Bild aus dem Clipboard und sendet es.
+// Wird mit gehaltenem Lock aus dem Frame aufgerufen.
+func (a *App) pasteImageFromClipboard() {
+	conv, client := a.store.Active, a.client
+	if conv == nil || client == nil || conv.Kind == chat.Server {
+		return
+	}
+	_, data, ok := ClipboardImage()
+	if !ok {
+		a.store.Sys(conv, "Kein Bild im Clipboard gefunden.")
+		return
+	}
+	go a.sendImage(conv, client, "clipboard.png", data)
+}
+
 // pickImage öffnet den Dateidialog. Wird mit gehaltenem Lock aus dem Frame aufgerufen.
 func (a *App) pickImage() {
 	conv, client := a.store.Active, a.client
@@ -187,6 +239,14 @@ func (a *App) pickImage() {
 
 // sendImageFile ist die Variante für /img <pfad>. Wird mit gehaltenem Lock aufgerufen.
 func (a *App) sendImageFile(conv *chat.Conversation, path string) {
+	a.sendImageFileKind(conv, path, false)
+}
+
+func (a *App) sendStickerFile(conv *chat.Conversation, path string) {
+	a.sendImageFileKind(conv, path, true)
+}
+
+func (a *App) sendImageFileKind(conv *chat.Conversation, path string, sticker bool) {
 	client := a.client
 	go func() {
 		st, err := os.Stat(path)
@@ -203,12 +263,16 @@ func (a *App) sendImageFile(conv *chat.Conversation, path string) {
 			a.note(conv, "Datei nicht lesbar: "+err.Error())
 			return
 		}
-		a.sendImage(conv, client, filepath.Base(path), data)
+		a.sendImageKind(conv, client, filepath.Base(path), data, sticker)
 	}()
 }
 
 // sendImage läuft in einer Goroutine (ohne Lock) und blockiert, bis die Übertragung endet.
 func (a *App) sendImage(conv *chat.Conversation, client *irc.Client, name string, data []byte) {
+	a.sendImageKind(conv, client, name, data, false)
+}
+
+func (a *App) sendImageKind(conv *chat.Conversation, client *irc.Client, name string, data []byte, sticker bool) {
 	name = chat.SafeName(name)
 	img, err := transfer.DecodeImage(data)
 	if err != nil {
@@ -224,7 +288,7 @@ func (a *App) sendImage(conv *chat.Conversation, client *irc.Client, name string
 		return
 	}
 
-	att := &chat.Attachment{Code: code, Name: name, Image: img, Outgoing: true, State: chat.AttWaiting}
+	att := &chat.Attachment{Code: code, Name: name, Image: img, Outgoing: true, Sticker: sticker, State: chat.AttWaiting}
 	a.mu.Lock()
 	if a.client != client {
 		a.mu.Unlock()
@@ -233,7 +297,11 @@ func (a *App) sendImage(conv *chat.Conversation, client *irc.Client, name string
 	// Der Wormhole-Code geht durch die E2E-Verschlüsselung – im Klartext könnte
 	// der Server das Bild selbst abholen.
 	enc := a.secure(conv)
-	a.deliver(conv, client, chat.FormatAttachment(code, name))
+	wireText := chat.FormatAttachment(code, name)
+	if sticker {
+		wireText = chat.FormatStickerAttachment(code, name)
+	}
+	a.deliver(conv, client, wireText)
 	a.store.Post(conv, chat.Message{
 		Sender: client.Nick(), Text: "Bild: " + name, Mine: true, Enc: enc, Attachment: att,
 	})
@@ -253,4 +321,70 @@ func (a *App) sendImage(conv *chat.Conversation, client *irc.Client, name string
 	}
 	a.mu.Unlock()
 	a.window.Invalidate()
+}
+
+// sendImageURL sends a direct media link and immediately renders it locally.
+// The caller holds a.mu, matching deliver and sendImageFile.
+func (a *App) sendImageURL(conv *chat.Conversation, client *irc.Client, u string, preview image.Image) error {
+	att := chat.ParseAttachment(u)
+	if att == nil {
+		return fmt.Errorf("unsupported image link")
+	}
+	att.Image = preview
+	att.Sticker = true
+	if preview != nil {
+		att.State = chat.AttReady
+	}
+	enc := a.secure(conv)
+	a.deliver(conv, client, u)
+	a.store.Post(conv, chat.Message{
+		Sender: client.Nick(), Text: "Bild: " + att.Name, Mine: true, Enc: enc, Attachment: att,
+	})
+	return nil
+}
+
+func (a *App) receiveURL(att *chat.Attachment) {
+	if att.State == chat.AttLoading {
+		return
+	}
+	att.State, att.Err = chat.AttLoading, ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		img, err := downloadImageURL(ctx, att.URL)
+
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		defer a.window.Invalidate()
+		if err != nil {
+			att.State, att.Err = chat.AttFailed, err.Error()
+			return
+		}
+		att.Image, att.State = img, chat.AttReady
+	}()
+}
+
+func downloadImageURL(ctx context.Context, u string) (image.Image, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "urineless/0.1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }

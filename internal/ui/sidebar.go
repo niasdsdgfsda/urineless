@@ -20,15 +20,12 @@ func (a *App) mainScreen(gtx layout.Context) layout.Dimensions {
 	gtx.Constraints.Min = gtx.Constraints.Max
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		layout.Rigid(a.sidebar),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return VLine(gtx, colorLine)
-		}),
 		layout.Flexed(1, a.chatPanel),
 	)
 }
 
 func (a *App) sidebar(gtx layout.Context) layout.Dimensions {
-	w := gtx.Dp(300)
+	w := gtx.Dp(320)
 	gtx.Constraints.Min = image.Pt(w, gtx.Constraints.Max.Y)
 	gtx.Constraints.Max.X = w
 
@@ -48,20 +45,20 @@ func (a *App) sidebar(gtx layout.Context) layout.Dimensions {
 // brandBar: Logo + Name oben in der Sidebar.
 func (a *App) brandBar(gtx layout.Context) layout.Dimensions {
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
-	return layout.Inset{Top: 14, Bottom: 2, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{Top: 18, Bottom: 12, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return Logo(gtx, 38) }),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return Logo(gtx, 36) }),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						l := material.H6(a.th, "urineless")
 						l.Font.Weight = font.Bold
-						l.Color = colorAccent
+						l.Color = colorTextMain
 						return l.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						l := material.Caption(a.th, "stay dry, stay private uwu")
+						l := material.Caption(a.th, "private IRC")
 						l.Color = colorMuted
 						return l.Layout(gtx)
 					}),
@@ -81,7 +78,7 @@ func (a *App) joinBar(gtx layout.Context) layout.Dimensions {
 	return layout.UniformInset(10).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				return Pill(gtx, colorField, 100, func(gtx layout.Context) layout.Dimensions {
+				return Pill(gtx, colorField, 20, func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Top: 9, Bottom: 9, Left: 16, Right: 16}.Layout(gtx,
 						material.Editor(a.th, &a.joinEd, "#kanal / nick ...").Layout)
 				})
@@ -89,8 +86,9 @@ func (a *App) joinBar(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				b := material.Button(a.th, &a.joinBtn, "+")
-				b.CornerRadius = unit.Dp(20)
-				b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 14, Right: 14}
+				b.Background = colorAccent
+				b.CornerRadius = unit.Dp(16)
+				b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
 				return b.Layout(gtx)
 			}),
 		)
@@ -117,7 +115,7 @@ func (a *App) convRow(gtx layout.Context, c *chat.Conversation) layout.Dimension
 		return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			bg := colorSidebar
 			if active {
-				bg = colorAccent
+				bg = colorHover
 			} else if click.Hovered() {
 				bg = colorHover
 			}
@@ -169,7 +167,7 @@ func (a *App) convRow(gtx layout.Context, c *chat.Conversation) layout.Dimension
 												return layout.Dimensions{}
 											}
 											return layout.Inset{Left: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												return Badge(gtx, a.th, c.Unread, colorLavender)
+												return Badge(gtx, a.th, c.Unread, colorAccent)
 											})
 										}),
 									)
@@ -211,6 +209,7 @@ func (a *App) accountBar(gtx layout.Context) layout.Dimensions {
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				l := material.Body1(a.th, a.client.Nick())
 				l.MaxLines = 1
+				l.Color = colorTextMain
 				return l.Layout(gtx)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {

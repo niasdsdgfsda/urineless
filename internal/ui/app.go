@@ -19,9 +19,9 @@ import (
 	"ircgram/internal/chat"
 	"ircgram/internal/e2e"
 	"ircgram/internal/irc"
+	"ircgram/internal/nekos"
 )
 
-// App hält den gesamten UI- und Verbindungszustand.
 type App struct {
 	window *app.Window
 	th     *material.Theme
@@ -30,14 +30,14 @@ type App struct {
 	store      *chat.Store
 	client     *irc.Client
 	autojoin   []string
-	identPass  string // NickServ-Passwort, wird nach Verbindungsaufbau gesendet
+	identPass  string
 	connecting bool
 	loginErr   string
 	focusInput bool
 
-	// E2E Verschlüsselung (pro Chat abschaltbar über conv.NoE2E)
-	e2e  *e2e.Manager
-	jobs chan func() // Sende-Warteschlange (hält die Reihenfolge)
+	e2e   *e2e.Manager
+	jobs  chan func()
+	nekos *nekos.Client
 
 	// Login
 	serverEd, nickEd, passEd, chansEd, keyEd widget.Editor
@@ -55,11 +55,17 @@ type App struct {
 	rowClicks     map[string]*widget.Clickable
 	msgLists      map[string]*widget.List
 
-	// Bild-Anhänge (Wormhole)
+	// Anhänge
 	expl      *explorer.Explorer
 	imgBtn    widget.Clickable
 	attClicks map[*chat.Attachment]*widget.Clickable
 	imgOps    map[*chat.Attachment]paint.ImageOp
+
+	// Sticker / Viewer / Paste
+	viewer     viewer
+	pasteBtn   widget.Clickable
+	stickerBtn widget.Clickable
+	picker     *stickerPicker
 }
 
 func newApp(w *app.Window) *App {
@@ -68,12 +74,15 @@ func newApp(w *app.Window) *App {
 		th:        newTheme(),
 		store:     chat.NewStore(),
 		jobs:      make(chan func(), 256),
+		nekos:     newNekosClient(),
 		rowClicks: map[string]*widget.Clickable{},
 		msgLists:  map[string]*widget.List{},
 		expl:      explorer.NewExplorer(w),
 		attClicks: map[*chat.Attachment]*widget.Clickable{},
 		imgOps:    map[*chat.Attachment]paint.ImageOp{},
+		picker:    newStickerPicker(),
 	}
+	_ = InitClipboard()
 	go func() {
 		for job := range a.jobs {
 			job()
@@ -94,7 +103,6 @@ func newApp(w *app.Window) *App {
 	return a
 }
 
-// Run ist die Hauptschleife des Fensters.
 func Run(window *app.Window) error {
 	a := newApp(window)
 	var ops op.Ops
@@ -111,8 +119,14 @@ func Run(window *app.Window) error {
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
+			a.handleGlobalKeys(gtx)
 			a.mu.Lock()
+			a.viewer.handle(gtx)
 			a.layout(gtx)
+			if a.picker.open {
+				println("[APP] picker.handle")
+				a.picker.handle(gtx, a)
+			}
 			a.mu.Unlock()
 			e.Frame(gtx.Ops)
 		}
@@ -123,7 +137,40 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	if a.client == nil {
 		return a.loginScreen(gtx)
 	}
-	return a.mainScreen(gtx)
+	if a.picker.open {
+		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+			layout.Flexed(1, a.mainScreen),
+			layout.Rigid(a.pickerScreen),
+		)
+	}
+	d := a.mainScreen(gtx)
+	if a.viewer.open {
+		a.viewer.Layout(gtx, a.th)
+	}
+	return d
+}
+
+func (a *App) handleGlobalKeys(gtx layout.Context) {
+	ev, ok := gtx.Event(key.Filter{Name: "V", Required: key.ModShortcut})
+	if !ok {
+		return
+	}
+	if _, ok := ev.(key.Event); !ok {
+		return
+	}
+	a.mu.Lock()
+	conv, client := a.store.Active, a.client
+	if client == nil || conv == nil || conv.Kind == chat.Server {
+		a.mu.Unlock()
+		return
+	}
+	_, data, ok := ClipboardImage()
+	if !ok {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	go a.sendImage(conv, client, "clipboard.png", data)
 }
 
 func (a *App) click(key string) *widget.Clickable {
@@ -167,9 +214,6 @@ func submitted(gtx layout.Context, ed *widget.Editor) bool {
 	return done
 }
 
-// ---- Verbinden ----
-
-// startConnect wird mit gehaltenem Lock aus dem Frame aufgerufen.
 func (a *App) startConnect() {
 	if a.connecting {
 		return
@@ -191,12 +235,9 @@ func (a *App) startConnect() {
 		return
 	}
 	if keyPass == "" {
-		a.loginErr = "Wähle ein Schlüssel-Passwort. Es schützt deine E2E-Schlüssel auf der Festplatte."
+		a.loginErr = "Wähle ein Schlüssel-Passwort."
 		return
 	}
-
-	// E2E-Schlüsselspeicher öffnen. Schlägt das fehl, wird NICHT verbunden,
-	// damit nie versehentlich im Klartext geschrieben wird.
 	mgr, err := e2e.Open(e2ePath(), keyPass)
 	if err != nil {
 		a.loginErr = "Schlüsselspeicher: " + err.Error()
@@ -219,7 +260,6 @@ func (a *App) startConnect() {
 		}
 		a.client = c
 		a.autojoin = chans
-
 		a.store = chat.NewStore()
 		a.msgLists = map[string]*widget.List{}
 		a.attClicks = map[*chat.Attachment]*widget.Clickable{}
@@ -237,8 +277,6 @@ func (a *App) disconnect() {
 	}
 	a.loginErr = ""
 }
-
-// ---- IRC-Events ----
 
 func (a *App) pump(c *irc.Client) {
 	for ev := range c.Events {
@@ -326,7 +364,6 @@ func (a *App) handle(c *irc.Client, ev irc.Event) {
 	}
 }
 
-// incoming verarbeitet eine PRIVMSG: Signal-Zeilen (privat), Gruppen-Zeilen (Kanal) oder Klartext.
 func (a *App) incoming(c *irc.Client, conv *chat.Conversation, ev irc.Event) {
 	s := a.store
 	switch {
@@ -358,26 +395,43 @@ func (a *App) incoming(c *irc.Client, conv *chat.Conversation, ev irc.Event) {
 	}
 }
 
-// post legt eine eingehende Nachricht im Chat ab (inkl. Aktionen und Wormhole-Anhänge).
 func (a *App) post(c *irc.Client, conv *chat.Conversation, nick, text string, t time.Time, enc bool) {
-	if strings.HasPrefix(text, "\x01ACTION ") { // verschlüsselte /me-Aktion
+	if strings.HasPrefix(text, "\x01ACTION ") {
 		text = "* " + nick + " " + strings.TrimSuffix(strings.TrimPrefix(text, "\x01ACTION "), "\x01")
 	}
 	msg := chat.Message{
 		Sender: nick, Text: text, Time: t, Enc: enc,
 		Mine: strings.EqualFold(nick, c.Nick()),
 	}
-	if att := chat.ParseAttachment(text); att != nil && !msg.Mine {
+	if att := chat.ParseAttachment(text); att != nil {
+		if msg.Mine && hasOutgoingAttachment(conv, att) {
+			return
+		}
 		msg.Attachment = att
 		msg.Text = "Bild: " + att.Name
-		if autoLoadPrivate && conv.Kind == chat.Private {
+		if !msg.Mine && autoLoadPrivate && conv.Kind == chat.Private {
 			a.receive(att)
 		}
 	}
 	a.store.Post(conv, msg)
 }
 
-// ---- Eingaben des Nutzers ----
+func hasOutgoingAttachment(conv *chat.Conversation, incoming *chat.Attachment) bool {
+	for i := len(conv.Messages) - 1; i >= 0; i-- {
+		msg := conv.Messages[i]
+		if !msg.Mine || msg.Attachment == nil {
+			continue
+		}
+		existing := msg.Attachment
+		if incoming.Code != "" && existing.Code == incoming.Code {
+			return true
+		}
+		if incoming.URL != "" && existing.URL == incoming.URL {
+			return true
+		}
+	}
+	return false
+}
 
 func (a *App) openOrJoin(name string) {
 	defer a.window.Invalidate()
@@ -403,6 +457,13 @@ func (a *App) submit(text string) {
 	if conv.Kind == chat.Server {
 		a.store.Sys(conv, "Hier kann nicht geschrieben werden. Nutze /join #kanal oder /msg nick text (/help).")
 		return
+	}
+	if len(text) > 2 && strings.HasPrefix(text, ":") && strings.HasSuffix(text, ":") {
+		name := strings.Trim(text, ":")
+		if path, ok := chat.ResolveSticker(name); ok {
+			a.sendImageFile(conv, path)
+			return
+		}
 	}
 	enc := a.secure(conv)
 	a.deliver(conv, a.client, text)
@@ -462,6 +523,21 @@ func (a *App) command(conv *chat.Conversation, line string) {
 			return
 		}
 		a.sendImageFile(conv, path)
+	case "sticker", "s":
+		if conv.Kind == chat.Server {
+			a.store.Sys(conv, "Sticker gehen nur in Chats.")
+			return
+		}
+		if len(args) == 0 {
+			a.picker.Open(a)
+			return
+		}
+		path, ok := chat.ResolveSticker(args[0])
+		if !ok {
+			a.store.Sys(conv, "Sticker '"+args[0]+"' nicht gefunden.")
+			return
+		}
+		a.sendImageFile(conv, path)
 	case "nick":
 		if len(args) > 0 {
 			a.client.SetNick(args[0])
@@ -471,6 +547,6 @@ func (a *App) command(conv *chat.Conversation, line string) {
 	case "e2e":
 		a.e2eCommand(conv, args)
 	default:
-		a.store.Sys(conv, "Befehle: /join #kanal, /part, /msg nick text, /me text, /img pfad, /nick name, /e2e ...")
+		a.store.Sys(conv, "Befehle: /join #kanal, /part, /msg nick text, /me text, /img pfad, /sticker [name], /nick name, /e2e ...")
 	}
 }

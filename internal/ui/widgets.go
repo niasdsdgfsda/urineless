@@ -147,7 +147,12 @@ func itoa(n int) string {
 // Bubble zeichnet eine Chat-Blase. tag steht vor der Uhrzeit (z. B. "e2e").
 func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName bool, tag string, body layout.Widget) layout.Dimensions {
 	if body == nil {
-		body = material.Body1(th, m.Text).Layout
+		l := material.Body1(th, m.Text)
+		l.Color = colorTextMain
+		if m.Mine {
+			l.Color = colorWhite
+		}
+		body = l.Layout
 	}
 	bg := colorIncoming
 	if m.Mine {
@@ -179,12 +184,49 @@ func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName boo
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							l := material.Caption(th, foot)
 							l.Color = colorMuted
+							if m.Mine {
+								l.Color = colorWhite
+							}
 							return l.Layout(gtx)
 						}),
 					)
 				}),
 			)
 		})
+	})
+}
+
+func StickerPost(gtx layout.Context, th *material.Theme, m chat.Message, showName bool, tag string, body layout.Widget) layout.Dimensions {
+	if body == nil {
+		l := material.Body1(th, m.Text)
+		l.Color = colorTextMain
+		if m.Mine {
+			l.Color = colorWhite
+		}
+		body = l.Layout
+	}
+	maxW := min(gtx.Constraints.Max.X, gtx.Dp(150))
+	gtx.Constraints.Max.X = maxW
+	gtx.Constraints.Min = image.Point{}
+	alignment := layout.Start
+	if m.Mine {
+		alignment = layout.End
+	}
+	return layout.Inset{Top: 1, Bottom: 1}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical, Alignment: alignment}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if !showName {
+					return layout.Dimensions{}
+				}
+				l := material.Caption(th, m.Sender)
+				l.Color = hashColor(m.Sender)
+				l.Font.Weight = font.Bold
+				return l.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: 0, Bottom: 0, Left: 0, Right: 0}.Layout(gtx, body)
+			}),
+		)
 	})
 }
 

@@ -38,9 +38,9 @@ func (a *App) chatHeader(gtx layout.Context, conv *chat.Conversation) layout.Dim
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return FillBG(gtx, colorWhite, func(gtx layout.Context) layout.Dimensions {
+			return FillBG(gtx, colorSidebar, func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Min.X = gtx.Constraints.Max.X
-				return layout.Inset{Top: 8, Bottom: 8, Left: 14, Right: 14}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: 12, Bottom: 12, Left: 14, Right: 14}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return Avatar(gtx, a.th, conv.Name, 40)
@@ -51,6 +51,7 @@ func (a *App) chatHeader(gtx layout.Context, conv *chat.Conversation) layout.Dim
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 									l := material.Body1(a.th, conv.Name)
 									l.Font.Weight = font.Bold
+									l.Color = colorTextMain
 									l.MaxLines = 1
 									return l.Layout(gtx)
 								}),
@@ -72,7 +73,6 @@ func (a *App) chatHeader(gtx layout.Context, conv *chat.Conversation) layout.Dim
 	)
 }
 
-// e2eBadge zeigt grün "e2e an" oder rot "ohne E2E".
 func (a *App) e2eBadge(gtx layout.Context, conv *chat.Conversation) layout.Dimensions {
 	if conv.Kind == chat.Server {
 		return layout.Dimensions{}
@@ -132,6 +132,9 @@ func (a *App) messageList(gtx layout.Context, conv *chat.Conversation) layout.Di
 					body = a.attachmentBody(m.Attachment)
 				}
 				return dir.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					if m.Attachment != nil && m.Attachment.Sticker {
+						return StickerPost(gtx, a.th, m, showName, tag, body)
+					}
 					return Bubble(gtx, a.th, m, showName, tag, body)
 				})
 			})
@@ -144,6 +147,12 @@ func (a *App) inputBar(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 
 	if a.imgBtn.Clicked(gtx) {
 		a.pickImage()
+	}
+	if a.stickerBtn.Clicked(gtx) {
+		a.picker.Open(a)
+	}
+	if a.pasteBtn.Clicked(gtx) {
+		a.pasteImageFromClipboard()
 	}
 	send := a.sendBtn.Clicked(gtx)
 	if submitted(gtx, &a.msgEd) {
@@ -158,28 +167,45 @@ func (a *App) inputBar(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 	}
 
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
-	return FillBG(gtx, colorWhite, func(gtx layout.Context) layout.Dimensions {
+	return FillBG(gtx, colorSidebar, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		return layout.UniformInset(10).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					b := material.Button(a.th, &a.imgBtn, "Bild")
-					b.Background = colorLavender
-					b.CornerRadius = unit.Dp(20)
-					b.Inset = layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}
+					b.Background = colorField
+					b.CornerRadius = unit.Dp(18)
+					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
+					return b.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					b := material.Button(a.th, &a.stickerBtn, "Sticker")
+					b.Background = colorField
+					b.CornerRadius = unit.Dp(18)
+					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
+					return b.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					b := material.Button(a.th, &a.pasteBtn, "Einfügen")
+					b.Background = colorField
+					b.CornerRadius = unit.Dp(18)
+					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
 					return b.Layout(gtx)
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return Pill(gtx, colorField, 100, func(gtx layout.Context) layout.Dimensions {
+					return Pill(gtx, colorField, 18, func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Top: 10, Bottom: 10, Left: 18, Right: 18}.Layout(gtx,
-							material.Editor(a.th, &a.msgEd, "Nachricht ...").Layout)
+							material.Editor(a.th, &a.msgEd, "Nachricht ... (:sticker: für Sticker)").Layout)
 					})
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					b := material.Button(a.th, &a.sendBtn, "Senden")
-					b.CornerRadius = unit.Dp(20)
+					b.Background = colorAccent
+					b.CornerRadius = unit.Dp(18)
 					b.Inset = layout.Inset{Top: 10, Bottom: 10, Left: 18, Right: 18}
 					return b.Layout(gtx)
 				}),

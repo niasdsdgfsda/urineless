@@ -39,10 +39,10 @@ func (a *App) loginCard(gtx layout.Context) layout.Dimensions {
 	gtx.Constraints.Max.X = min(gtx.Constraints.Max.X, gtx.Dp(420))
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 
-	return Pill(gtx, colorWhite, 32, func(gtx layout.Context) layout.Dimensions {
+	return Pill(gtx, colorSidebar, 28, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(28).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return Logo(gtx, 96) }),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return Logo(gtx, 88) }),
 				layout.Rigid(layout.Spacer{Height: 10}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					t := material.H4(th, "urineless")
@@ -51,7 +51,7 @@ func (a *App) loginCard(gtx layout.Context) layout.Dimensions {
 					return t.Layout(gtx)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					s := material.Body2(th, "privates IRC, nix läuft aus uwu")
+					s := material.Body2(th, "private IRC. clean and fast.")
 					s.Color = colorMuted
 					return s.Layout(gtx)
 				}),
@@ -95,6 +95,7 @@ func (a *App) loginCard(gtx layout.Context) layout.Dimensions {
 						label = "verbinde ..."
 					}
 					b := material.Button(th, &a.connectBtn, label)
+					b.Background = colorAccent
 					b.CornerRadius = unit.Dp(22)
 					b.Inset = layout.Inset{Top: 13, Bottom: 13, Left: 18, Right: 18}
 					return b.Layout(gtx)
