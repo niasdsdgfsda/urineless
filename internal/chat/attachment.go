@@ -45,20 +45,26 @@ var imgURLRe = regexp.MustCompile(`^\[img\]\s+(https?://\S+)$`)
 var plainURLRe = regexp.MustCompile(`^https?://\S+$`)
 
 var autoLoadHosts = map[string]bool{
-	"nekos.best":      true,
-	"cataas.com":      true,
-	"media.tenor.com": true,
-	"c.tenor.com":     true,
-	"media.giphy.com": true,
-	"i.giphy.com":     true,
+	"nekos.best":        true,
+	"cataas.com":        true,
+	"media.tenor.com":   true,
+	"c.tenor.com":       true,
+	"media.giphy.com":   true,
+	"i.giphy.com":       true,
+	"gifcities.org":     true,
+	"blob.gifcities.org": true,
+	"web.archive.org":   true,
 }
 var imageHosts = map[string]bool{
-	"nekos.best":      true,
-	"cataas.com":      true,
-	"media.tenor.com": true,
-	"c.tenor.com":     true,
-	"media.giphy.com": true,
-	"i.giphy.com":     true,
+	"nekos.best":        true,
+	"cataas.com":        true,
+	"media.tenor.com":   true,
+	"c.tenor.com":       true,
+	"media.giphy.com":   true,
+	"i.giphy.com":       true,
+	"gifcities.org":     true,
+	"blob.gifcities.org": true,
+	"web.archive.org":   true,
 }
 
 func FormatImageURL(u string) string {
@@ -103,7 +109,7 @@ func isStickerURL(rawURL string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	return isTenorMediaHost(host) || host == "nekos.best"
+	return isTenorMediaHost(host) || host == "nekos.best" || host == "gifcities.org" || host == "blob.gifcities.org" || host == "web.archive.org"
 }
 
 func (a *Attachment) AutoLoad() bool {

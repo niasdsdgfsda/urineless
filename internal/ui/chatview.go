@@ -7,6 +7,7 @@ import (
 	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
+	"gioui.org/widget"
 	"gioui.org/widget/material"
 
 	"ircgram/internal/chat"
@@ -169,47 +170,64 @@ func (a *App) inputBar(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 	return FillBG(gtx, colorSidebar, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		return layout.UniformInset(10).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			compact := gtx.Constraints.Max.X < gtx.Dp(620)
+			actions := func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return inputActionButton(gtx, a.th, &a.imgBtn, "Bild")
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return inputActionButton(gtx, a.th, &a.stickerBtn, "Sticker")
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return inputActionButton(gtx, a.th, &a.pasteBtn, "Einfügen")
+					}),
+				)
+			}
+			editor := func(gtx layout.Context) layout.Dimensions {
+				return Pill(gtx, colorField, 18, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx,
+						material.Editor(a.th, &a.msgEd, "Nachricht ...").Layout)
+				})
+			}
+			sendButton := func(gtx layout.Context) layout.Dimensions {
+				b := material.Button(a.th, &a.sendBtn, "Senden")
+				b.Background = colorAccent
+				b.CornerRadius = unit.Dp(18)
+				b.Inset = layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}
+				return b.Layout(gtx)
+			}
+			if compact {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(actions),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Flexed(1, editor),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+							layout.Rigid(sendButton),
+						)
+					}),
+				)
+			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					b := material.Button(a.th, &a.imgBtn, "Bild")
-					b.Background = colorField
-					b.CornerRadius = unit.Dp(18)
-					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
-					return b.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					b := material.Button(a.th, &a.stickerBtn, "Sticker")
-					b.Background = colorField
-					b.CornerRadius = unit.Dp(18)
-					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
-					return b.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					b := material.Button(a.th, &a.pasteBtn, "Einfügen")
-					b.Background = colorField
-					b.CornerRadius = unit.Dp(18)
-					b.Inset = layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}
-					return b.Layout(gtx)
-				}),
+				layout.Rigid(actions),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return Pill(gtx, colorField, 18, func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Top: 10, Bottom: 10, Left: 18, Right: 18}.Layout(gtx,
-							material.Editor(a.th, &a.msgEd, "Nachricht ... (:sticker: für Sticker)").Layout)
-					})
-				}),
+				layout.Flexed(1, editor),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					b := material.Button(a.th, &a.sendBtn, "Senden")
-					b.Background = colorAccent
-					b.CornerRadius = unit.Dp(18)
-					b.Inset = layout.Inset{Top: 10, Bottom: 10, Left: 18, Right: 18}
-					return b.Layout(gtx)
-				}),
+				layout.Rigid(sendButton),
 			)
 		})
 	})
+}
+
+func inputActionButton(gtx layout.Context, th *material.Theme, click *widget.Clickable, label string) layout.Dimensions {
+	b := material.Button(th, click, label)
+	b.Background = colorField
+	b.CornerRadius = unit.Dp(16)
+	b.Inset = layout.Inset{Top: 7, Bottom: 7, Left: 10, Right: 10}
+	return b.Layout(gtx)
 }

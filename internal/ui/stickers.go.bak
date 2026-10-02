@@ -1,0 +1,481 @@
+package ui
+
+import (
+	"bytes"
+	"context"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"strings"
+	"time"
+
+	"gioui.org/io/event"
+	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/op/clip"
+	"gioui.org/op/paint"
+	"gioui.org/unit"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
+
+	"ircgram/internal/chat"
+	"ircgram/internal/nekos"
+)
+
+type stickerEntry struct {
+	name  string
+	local string
+	img   image.Image
+	op    paint.ImageOp
+}
+
+// hitRect ist ein Klickziel mit Position und Aktion.
+type hitRect struct {
+	rect image.Rectangle
+	on   func()
+}
+
+type stickerPicker struct {
+	open    bool
+	loading bool
+	errMsg  string
+	entries []*stickerEntry
+	tab     int
+
+	search    widget.Editor
+	list      widget.List
+
+	nekos  *nekos.Client
+	target *chat.Conversation
+
+	// Tag für den Pointer-Input
+	tag struct{}
+
+	// Ziele aus dem letzten Layout
+	hits []hitRect
+	// Position des letzten Klicks (in Pixeln)
+	lastPress image.Point
+	// ob aktuell gedrückt wird
+	pressed bool
+	// ID des Tabs, auf dem gedrückt wurde
+	pressedTab int
+}
+
+func newStickerPicker() *stickerPicker {
+	p := &stickerPicker{}
+	p.list.Axis = layout.Vertical
+	p.search.SingleLine = true
+	p.search.Submit = true
+	p.nekos = nekos.NewClient()
+	return p
+}
+
+func (p *stickerPicker) Open(a *App) {
+	p.open = true
+	p.tab = 0
+	p.errMsg = ""
+	p.target = a.store.Active
+	p.loadLocal()
+	go p.loadNekos("hug")
+}
+
+func (p *stickerPicker) Close() {
+	p.open = false
+	p.entries = nil
+	p.target = nil
+	p.hits = nil
+}
+
+func (p *stickerPicker) loadLocal() {
+	list := chat.StickerList()
+	p.entries = make([]*stickerEntry, 0, len(list))
+	for _, s := range list {
+		p.entries = append(p.entries, &stickerEntry{name: s.Name, local: s.Path, img: s.Image})
+	}
+	p.tab = 0
+}
+
+func (p *stickerPicker) loadNekos(category string) {
+	p.loading = true
+	p.errMsg = ""
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	res, err := p.nekos.Random(ctx, category, 12)
+	entries := make([]*stickerEntry, 0, len(res))
+	if err == nil {
+		for i := range res {
+			r := res[i]
+			data, derr := downloadGIF(ctx, r.URL)
+			if derr != nil {
+				continue
+			}
+			img, _, derr := image.Decode(bytes.NewReader(data))
+			if derr != nil {
+				continue
+			}
+			entries = append(entries, &stickerEntry{name: r.AnimeName, img: img})
+		}
+	}
+
+	p.entries = entries
+	p.loading = false
+	p.tab = 1
+	if err != nil {
+		p.errMsg = "Nekos: " + err.Error()
+	}
+}
+
+// handle liest Pointer-Events und dispatcht sie an die Hit-Rechtecke.
+func (p *stickerPicker) handle(gtx layout.Context, a *App) {
+	if !p.open {
+		return
+	}
+	// ESC
+	if ev, ok := gtx.Event(key.Filter{Name: key.NameEscape}); ok {
+		if _, ok := ev.(key.Event); ok {
+			p.Close()
+			return
+		}
+	}
+	// Suchfeld-Update
+	if ev, ok := p.search.Update(gtx); ok {
+		if _, ok := ev.(widget.SubmitEvent); ok {
+			go p.loadNekos(strings.TrimSpace(p.search.Text()))
+		}
+	}
+	// Pointer
+	for {
+		ev, ok := gtx.Event(pointer.Filter{
+			Target: &p.tag,
+			Kinds:  pointer.Press | pointer.Release,
+		})
+		if !ok {
+			break
+		}
+		pe, ok := ev.(pointer.Event)
+		if !ok {
+			continue
+		}
+		pos := image.Pt(int(pe.Position.X), int(pe.Position.Y))
+		switch pe.Kind {
+		case pointer.Press:
+			p.lastPress = pos
+			p.pressed = true
+		case pointer.Release:
+			if !p.pressed {
+				continue
+			}
+			p.pressed = false
+			// Hit-Test: nur wenn Press und Release auf demselben Rect landen
+			for _, h := range p.hits {
+				if pos.In(h.rect) && p.lastPress.In(h.rect) {
+					h.on()
+					break
+				}
+			}
+		}
+	}
+}
+
+func (a *App) pickerScreen(gtx layout.Context) layout.Dimensions {
+	p := a.picker
+	p.hits = p.hits[:0] // Ziele aus letztem Frame löschen
+
+	// Input-Tag über den ganzen Screen registrieren
+	st := op.Record(gtx.Ops)
+	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+	event.Op(gtx.Ops, &p.tag)
+	area.Pop()
+	st.Stop().Add(gtx.Ops)
+
+	gtx.Constraints.Min = gtx.Constraints.Max
+	return FillBG(gtx, colorLoginBG, func(gtx layout.Context) layout.Dimensions {
+		gtx.Constraints.Min = gtx.Constraints.Max
+		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			w := gtx.Constraints.Max.X
+			h := gtx.Constraints.Max.Y
+			gtx.Constraints.Min = image.Pt(w, h)
+			gtx.Constraints.Max = image.Pt(w, h)
+
+			paint.FillShape(gtx.Ops, colorWhite,
+				clip.UniformRRect(image.Rectangle{Max: image.Pt(w, h)}, gtx.Dp(22)).Op(gtx.Ops))
+
+			// Offset-Merker für Hit-Test
+			baseX := gtx.Constraints.Min.X
+			baseY := gtx.Constraints.Min.Y
+			_ = baseX
+			_ = baseY
+
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return p.header(gtx, a, a.th)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return HLine(gtx, colorLine)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return p.grid(gtx, a, a.th)
+				}),
+			)
+		})
+	})
+}
+
+// zeichnet einen Button-ähnlichen Bereich und registriert ein Hit-Rect.
+func (p *stickerPicker) clickableRect(
+	gtx layout.Context,
+	onClick func(),
+	content layout.Widget,
+) layout.Dimensions {
+	// Position merken (relativ zum Screen)
+	posX := gtx.Constraints.Min.X
+	posY := gtx.Constraints.Min.Y
+
+	dims := content(gtx)
+
+	// Hit-Rect relativ zum Widget-Anfang
+	rect := image.Rect(
+		posX, posY,
+		posX+dims.Size.X, posY+dims.Size.Y,
+	)
+	p.hits = append(p.hits, hitRect{rect: rect, on: onClick})
+	return dims
+}
+
+func (p *stickerPicker) header(gtx layout.Context, a *App, th *material.Theme) layout.Dimensions {
+	gtx.Constraints.Min.X = gtx.Constraints.Max.X
+	return layout.Inset{Top: 12, Bottom: 12, Left: 12, Right: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return p.clickableRect(gtx, func() {
+					println("[STICKER] Lokal")
+					p.loadLocal()
+				}, func(gtx layout.Context) layout.Dimensions {
+					bg := colorField
+					fg := colorTextMain
+					if p.tab == 0 {
+						bg = colorAccent
+						fg = colorWhite
+					}
+					return layout.Stack{}.Layout(gtx,
+						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+							paint.FillShape(gtx.Ops, bg,
+								clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, gtx.Dp(16)).Op(gtx.Ops))
+							return layout.Dimensions{Size: gtx.Constraints.Min}
+						}),
+						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: 8, Bottom: 8, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								l := material.Body2(th, "Lokal")
+								l.Color = fg
+								return l.Layout(gtx)
+							})
+						}),
+					)
+				})
+			}),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return p.clickableRect(gtx, func() {
+					println("[STICKER] Nekos")
+					go p.loadNekos("hug")
+				}, func(gtx layout.Context) layout.Dimensions {
+					bg := colorField
+					fg := colorTextMain
+					if p.tab == 1 {
+						bg = colorAccent
+						fg = colorWhite
+					}
+					return layout.Stack{}.Layout(gtx,
+						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+							paint.FillShape(gtx.Ops, bg,
+								clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, gtx.Dp(16)).Op(gtx.Ops))
+							return layout.Dimensions{Size: gtx.Constraints.Min}
+						}),
+						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: 8, Bottom: 8, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								l := material.Body2(th, "Nekos")
+								l.Color = fg
+								return l.Layout(gtx)
+							})
+						}),
+					)
+				})
+			}),
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if p.tab != 1 {
+					return layout.Dimensions{}
+				}
+				return layout.Inset{Left: 8, Right: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return material.Editor(th, &p.search, "Kategorie (hug, pat, kiss ...)").Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return p.clickableRect(gtx, func() {
+								println("[STICKER] Suche")
+								go p.loadNekos(strings.TrimSpace(p.search.Text()))
+							}, func(gtx layout.Context) layout.Dimensions {
+								return layout.Stack{}.Layout(gtx,
+									layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+										paint.FillShape(gtx.Ops, colorAccent,
+											clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, gtx.Dp(14)).Op(gtx.Ops))
+										return layout.Dimensions{Size: gtx.Constraints.Min}
+									}),
+									layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+										return layout.Inset{Top: 6, Bottom: 6, Left: 14, Right: 14}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											l := material.Body2(th, "Los")
+											l.Color = colorWhite
+											return l.Layout(gtx)
+										})
+									}),
+								)
+							})
+						}),
+					)
+				})
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return p.clickableRect(gtx, func() {
+					println("[STICKER] Zurück")
+					p.Close()
+				}, func(gtx layout.Context) layout.Dimensions {
+					return layout.Stack{}.Layout(gtx,
+						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+							paint.FillShape(gtx.Ops, colorDanger,
+								clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Min}, gtx.Dp(16)).Op(gtx.Ops))
+							return layout.Dimensions{Size: gtx.Constraints.Min}
+						}),
+						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: 8, Bottom: 8, Left: 14, Right: 14}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								l := material.Body2(th, "Zurück")
+								l.Color = colorWhite
+								return l.Layout(gtx)
+							})
+						}),
+					)
+				})
+			}),
+		)
+	})
+}
+
+func (p *stickerPicker) grid(gtx layout.Context, a *App, th *material.Theme) layout.Dimensions {
+	if p.loading {
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			l := material.Body2(th, "Lade ...")
+			l.Color = colorMuted
+			return l.Layout(gtx)
+		})
+	}
+	if p.errMsg != "" {
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			l := material.Body2(th, p.errMsg)
+			l.Color = colorDanger
+			return l.Layout(gtx)
+		})
+	}
+	if len(p.entries) == 0 {
+		hint := "Keine lokalen Sticker."
+		if p.tab == 1 {
+			hint = "Keine Nekos-Ergebnisse."
+		}
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			l := material.Body2(th, hint)
+			l.Color = colorMuted
+			return l.Layout(gtx)
+		})
+	}
+
+	cols := 4
+	if gtx.Constraints.Max.X < gtx.Dp(400) {
+		cols = 3
+	}
+	rows := (len(p.entries) + cols - 1) / cols
+
+	return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return material.List(th, &p.list).Layout(gtx, rows, func(gtx layout.Context, row int) layout.Dimensions {
+			children := make([]layout.FlexChild, 0, cols)
+			for c := 0; c < cols; c++ {
+				idx := row*cols + c
+				if idx >= len(p.entries) {
+					children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return layout.Dimensions{}
+					}))
+					continue
+				}
+				e := p.entries[idx]
+				children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return p.cell(gtx, a, th, e)
+				}))
+			}
+			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, children...)
+		})
+	})
+}
+
+func (p *stickerPicker) cell(gtx layout.Context, a *App, th *material.Theme, e *stickerEntry) layout.Dimensions {
+	if e.op == (paint.ImageOp{}) && e.img != nil {
+		e.op = paint.NewImageOp(e.img)
+	}
+	gtx.Constraints.Min.Y = gtx.Dp(100)
+	gtx.Constraints.Max.Y = gtx.Dp(100)
+
+	return layout.Inset{Top: 4, Bottom: 4, Left: 4, Right: 4}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return p.clickableRect(gtx, func() {
+			println("[STICKER] Kachel:", e.name)
+			p.send(a, e)
+		}, func(gtx layout.Context) layout.Dimensions {
+			paint.FillShape(gtx.Ops, colorField,
+				clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(10)).Op(gtx.Ops))
+			if e.img == nil {
+				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					l := material.Caption(th, e.name)
+					l.Color = colorMuted
+					return l.Layout(gtx)
+				})
+			}
+			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return widget.Image{Src: e.op, Fit: widget.Contain, Scale: 1}.Layout(gtx)
+			})
+		})
+	})
+}
+
+func (p *stickerPicker) send(a *App, e *stickerEntry) {
+	a.mu.Lock()
+	conv := p.target
+	client := a.client
+	if conv == nil {
+		conv = a.store.Active
+	}
+	a.mu.Unlock()
+	if conv == nil || client == nil || conv.Kind == chat.Server {
+		p.Close()
+		return
+	}
+	if e.local != "" {
+		a.sendImageFile(conv, e.local)
+		p.Close()
+		return
+	}
+	if e.img != nil {
+		var buf bytes.Buffer
+		if err := pngEncode(&buf, e.img); err != nil {
+			a.note(conv, "Bild nicht kodierbar: "+err.Error())
+			p.Close()
+			return
+		}
+		name := "nekos.gif"
+		if e.name != "" {
+			name = chat.SafeName(e.name) + ".gif"
+		}
+		a.sendImage(conv, client, name, buf.Bytes())
+	}
+	p.Close()
+}

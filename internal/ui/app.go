@@ -140,7 +140,12 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	if a.picker.open {
 		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			layout.Flexed(1, a.mainScreen),
-			layout.Rigid(a.pickerScreen),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				w := min(gtx.Constraints.Max.X, max(gtx.Dp(180), min(gtx.Dp(360), gtx.Constraints.Max.X*36/100)))
+				gtx.Constraints.Min.X = w
+				gtx.Constraints.Max.X = w
+				return a.pickerScreen(gtx)
+			}),
 		)
 	}
 	d := a.mainScreen(gtx)
@@ -300,6 +305,8 @@ func (a *App) handle(c *irc.Client, ev irc.Event) {
 			a.identPass = ""
 		}
 		for _, ch := range a.autojoin {
+			conv := s.Ensure(ch)
+			s.Select(conv)
 			c.Join(ch)
 		}
 	case irc.EvDisconnected:

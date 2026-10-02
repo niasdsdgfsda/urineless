@@ -1,0 +1,9 @@
+package ui
+
+import (
+	"ircgram/internal/nekos"
+)
+
+func newNekosClient() *nekos.Client {
+	return nekos.NewClient()
+}

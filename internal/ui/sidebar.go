@@ -18,6 +18,9 @@ func (a *App) mainScreen(gtx layout.Context) layout.Dimensions {
 		return a.loginScreen(gtx)
 	}
 	gtx.Constraints.Min = gtx.Constraints.Max
+	if a.picker.open && gtx.Constraints.Max.X < gtx.Dp(560) {
+		return a.chatPanel(gtx)
+	}
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		layout.Rigid(a.sidebar),
 		layout.Flexed(1, a.chatPanel),
@@ -25,7 +28,7 @@ func (a *App) mainScreen(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) sidebar(gtx layout.Context) layout.Dimensions {
-	w := gtx.Dp(320)
+	w := min(gtx.Dp(300), max(gtx.Dp(180), gtx.Constraints.Max.X*32/100))
 	gtx.Constraints.Min = image.Pt(w, gtx.Constraints.Max.Y)
 	gtx.Constraints.Max.X = w
 
@@ -129,7 +132,7 @@ func (a *App) convRow(gtx layout.Context, c *chat.Conversation) layout.Dimension
 				return layout.Inset{Top: 8, Bottom: 8, Left: 10, Right: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return Avatar(gtx, a.th, c.Name, 46)
+							return Avatar(gtx, a.th, c.Name, 44)
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {

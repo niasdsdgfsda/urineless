@@ -280,47 +280,71 @@ func (a *App) sendImageKind(conv *chat.Conversation, client *irc.Client, name st
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	code, done, err := transfer.Send(ctx, name, data)
-	if err != nil {
-		a.note(conv, "Wormhole-Fehler: "+err.Error())
-		return
+	att := &chat.Attachment{
+		Name:     name,
+		Image:    img,
+		Outgoing: true,
+		Sticker:  sticker,
+		State:    chat.AttLoading,
 	}
 
-	att := &chat.Attachment{Code: code, Name: name, Image: img, Outgoing: true, Sticker: sticker, State: chat.AttWaiting}
 	a.mu.Lock()
 	if a.client != client {
 		a.mu.Unlock()
 		return
 	}
-	// Der Wormhole-Code geht durch die E2E-Verschlüsselung – im Klartext könnte
-	// der Server das Bild selbst abholen.
 	enc := a.secure(conv)
-	wireText := chat.FormatAttachment(code, name)
-	if sticker {
-		wireText = chat.FormatStickerAttachment(code, name)
-	}
-	a.deliver(conv, client, wireText)
 	a.store.Post(conv, chat.Message{
 		Sender: client.Nick(), Text: "Bild: " + name, Mine: true, Enc: enc, Attachment: att,
 	})
-	if conv.Kind == chat.Channel {
-		a.store.Sys(conv, "Hinweis: Ein Wormhole-Code gilt nur einmal – nur der erste Empfänger bekommt das Bild.")
-	}
-	a.mu.Unlock()
 	a.window.Invalidate()
-
-	err = <-done
-
-	a.mu.Lock()
-	if err != nil {
-		att.State, att.Err = chat.AttFailed, err.Error()
-	} else {
-		att.State = chat.AttDelivered
-	}
 	a.mu.Unlock()
-	a.window.Invalidate()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		code, done, err := transfer.Send(ctx, name, data)
+
+		a.mu.Lock()
+		if err != nil {
+			att.State, att.Err = chat.AttFailed, "Wormhole: "+err.Error()
+			a.mu.Unlock()
+			a.window.Invalidate()
+			return
+		}
+
+		att.Code = code
+		att.State = chat.AttWaiting
+		wireText := chat.FormatAttachment(code, name)
+		if sticker {
+			wireText = chat.FormatStickerAttachment(code, name)
+		}
+		a.deliver(conv, client, wireText)
+		if conv.Kind == chat.Channel {
+			a.store.Sys(conv, "Hinweis: Ein Wormhole-Code gilt nur einmal – nur der erste Empfänger bekommt das Bild.")
+		}
+		a.mu.Unlock()
+		a.window.Invalidate()
+
+		select {
+		case err := <-done:
+			a.mu.Lock()
+			if err != nil {
+				att.State, att.Err = chat.AttFailed, err.Error()
+			} else {
+				att.State = chat.AttDelivered
+			}
+			a.mu.Unlock()
+			a.window.Invalidate()
+		case <-time.After(10 * time.Minute):
+			a.mu.Lock()
+			if att.State == chat.AttWaiting {
+				att.State, att.Err = chat.AttFailed, "Zeitüberschreitung beim Warten auf Abholung"
+			}
+			a.mu.Unlock()
+			a.window.Invalidate()
+		}
+	}()
 }
 
 // sendImageURL sends a direct media link and immediately renders it locally.
@@ -328,23 +352,33 @@ func (a *App) sendImageKind(conv *chat.Conversation, client *irc.Client, name st
 func (a *App) sendImageURL(conv *chat.Conversation, client *irc.Client, u string, preview image.Image) error {
 	att := chat.ParseAttachment(u)
 	if att == nil {
-		return fmt.Errorf("unsupported image link")
+		return fmt.Errorf("ununterstützter Bild-Link")
 	}
-	att.Image = preview
-	att.Sticker = true
 	if preview != nil {
+		setCachedImage(u, preview)
+		att.Image = preview
+		att.State = chat.AttReady
+	} else if cached, ok := getCachedImage(u); ok {
+		att.Image = cached
 		att.State = chat.AttReady
 	}
+	att.Sticker = true
 	enc := a.secure(conv)
 	a.deliver(conv, client, u)
 	a.store.Post(conv, chat.Message{
 		Sender: client.Nick(), Text: "Bild: " + att.Name, Mine: true, Enc: enc, Attachment: att,
 	})
+	a.window.Invalidate()
 	return nil
 }
 
 func (a *App) receiveURL(att *chat.Attachment) {
 	if att.State == chat.AttLoading {
+		return
+	}
+	if cached, ok := getCachedImage(att.URL); ok {
+		att.Image = cached
+		att.State = chat.AttReady
 		return
 	}
 	att.State, att.Err = chat.AttLoading, ""
@@ -365,6 +399,9 @@ func (a *App) receiveURL(att *chat.Attachment) {
 }
 
 func downloadImageURL(ctx context.Context, u string) (image.Image, error) {
+	if cached, ok := getCachedImage(u); ok {
+		return cached, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -386,5 +423,6 @@ func downloadImageURL(ctx context.Context, u string) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	setCachedImage(u, img)
 	return img, nil
 }
