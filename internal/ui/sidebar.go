@@ -28,18 +28,45 @@ func (a *App) mainScreen(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) sidebar(gtx layout.Context) layout.Dimensions {
-	w := gtx.Dp(320)
+	w := gtx.Dp(300)
 	gtx.Constraints.Min = image.Pt(w, gtx.Constraints.Max.Y)
 	gtx.Constraints.Max.X = w
 
 	return FillBG(gtx, colorSidebar, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.brandBar),
 			layout.Rigid(a.joinBar),
 			layout.Flexed(1, a.convListView),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return HLine(gtx, colorLine)
 			}),
 			layout.Rigid(a.accountBar),
+		)
+	})
+}
+
+// brandBar: Logo + Name oben in der Sidebar.
+func (a *App) brandBar(gtx layout.Context) layout.Dimensions {
+	gtx.Constraints.Min.X = gtx.Constraints.Max.X
+	return layout.Inset{Top: 14, Bottom: 2, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return Logo(gtx, 38) }),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						l := material.H6(a.th, "urineless")
+						l.Font.Weight = font.Bold
+						l.Color = colorAccent
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						l := material.Caption(a.th, "stay dry, stay private uwu")
+						l.Color = colorMuted
+						return l.Layout(gtx)
+					}),
+				)
+			}),
 		)
 	})
 }
@@ -56,7 +83,7 @@ func (a *App) joinBar(gtx layout.Context) layout.Dimensions {
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				return Pill(gtx, colorField, 100, func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Top: 9, Bottom: 9, Left: 16, Right: 16}.Layout(gtx,
-						material.Editor(a.th, &a.joinEd, "#kanal betreten / Nick öffnen").Layout)
+						material.Editor(a.th, &a.joinEd, "#kanal / nick ...").Layout)
 				})
 			}),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
@@ -86,70 +113,71 @@ func (a *App) convRow(gtx layout.Context, c *chat.Conversation) layout.Dimension
 	}
 	active := c == a.store.Active
 
-	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		bg := colorSidebar
-		if active {
-			bg = colorAccent
-		} else if click.Hovered() {
-			bg = colorHover
-		}
-		nameCol, subCol := colorTextMain, colorMuted
-		if active {
-			nameCol, subCol = colorWhite, colorWhite
-		}
+	return layout.Inset{Top: 2, Bottom: 2, Left: 8, Right: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			bg := colorSidebar
+			if active {
+				bg = colorAccent
+			} else if click.Hovered() {
+				bg = colorHover
+			}
+			nameCol, subCol := colorTextMain, colorMuted
+			if active {
+				nameCol, subCol = colorWhite, colorWhite
+			}
 
-		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		return FillBG(gtx, bg, func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min.X = gtx.Constraints.Max.X
-			return layout.Inset{Top: 8, Bottom: 8, Left: 12, Right: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return Avatar(gtx, a.th, c.Name, 50)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						last, hasLast := c.Last()
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-										l := material.Body1(a.th, c.Name)
-										l.Font.Weight = font.Bold
-										l.Color = nameCol
-										l.MaxLines = 1
-										return l.Layout(gtx)
-									}),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										if !hasLast {
-											return layout.Dimensions{}
-										}
-										l := material.Caption(a.th, last.Time.Format("15:04"))
-										l.Color = subCol
-										return l.Layout(gtx)
-									}),
-								)
-							}),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-										l := material.Body2(a.th, preview(last, hasLast))
-										l.Color = subCol
-										l.MaxLines = 1
-										return l.Layout(gtx)
-									}),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										if c.Unread == 0 {
-											return layout.Dimensions{}
-										}
-										return layout.Inset{Left: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-											return Badge(gtx, a.th, c.Unread, colorAccent)
-										})
-									}),
-								)
-							}),
-						)
-					}),
-				)
+			return Pill(gtx, bg, 18, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: 8, Bottom: 8, Left: 10, Right: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return Avatar(gtx, a.th, c.Name, 46)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							last, hasLast := c.Last()
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+											l := material.Body1(a.th, c.Name)
+											l.Font.Weight = font.Bold
+											l.Color = nameCol
+											l.MaxLines = 1
+											return l.Layout(gtx)
+										}),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if !hasLast {
+												return layout.Dimensions{}
+											}
+											l := material.Caption(a.th, last.Time.Format("15:04"))
+											l.Color = subCol
+											return l.Layout(gtx)
+										}),
+									)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+											l := material.Body2(a.th, preview(last, hasLast))
+											l.Color = subCol
+											l.MaxLines = 1
+											return l.Layout(gtx)
+										}),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if c.Unread == 0 {
+												return layout.Dimensions{}
+											}
+											return layout.Inset{Left: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												return Badge(gtx, a.th, c.Unread, colorLavender)
+											})
+										}),
+									)
+								}),
+							)
+						}),
+					)
+				})
 			})
 		})
 	})

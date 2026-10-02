@@ -111,7 +111,8 @@ func (a *App) placeholder(gtx layout.Context, att *chat.Attachment, click *widge
 			}
 			return layout.Inset{Top: 6, Bottom: 4}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				b := material.Button(a.th, click, "Bild laden")
-				b.CornerRadius = 12
+				b.Background = colorLavender
+				b.CornerRadius = 14
 				b.Inset = layout.Inset{Top: 6, Bottom: 6, Left: 14, Right: 14}
 				return b.Layout(gtx)
 			})
@@ -229,9 +230,12 @@ func (a *App) sendImage(conv *chat.Conversation, client *irc.Client, name string
 		a.mu.Unlock()
 		return
 	}
-	client.Privmsg(conv.Name, chat.FormatAttachment(code, name))
+	// Der Wormhole-Code geht durch die E2E-Verschlüsselung – im Klartext könnte
+	// der Server das Bild selbst abholen.
+	enc := a.secure(conv)
+	a.deliver(conv, client, chat.FormatAttachment(code, name))
 	a.store.Post(conv, chat.Message{
-		Sender: client.Nick(), Text: "Bild: " + name, Mine: true, Attachment: att,
+		Sender: client.Nick(), Text: "Bild: " + name, Mine: true, Enc: enc, Attachment: att,
 	})
 	if conv.Kind == chat.Channel {
 		a.store.Sys(conv, "Hinweis: Ein Wormhole-Code gilt nur einmal – nur der erste Empfänger bekommt das Bild.")

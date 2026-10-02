@@ -17,12 +17,11 @@ import (
 	"gioui.org/x/explorer"
 
 	"ircgram/internal/chat"
+	"ircgram/internal/e2e"
 	"ircgram/internal/irc"
 )
 
 // App hält den gesamten UI- und Verbindungszustand.
-// Alles wird von a.mu geschützt: der Frame-Handler sperrt pro Frame,
-// Hintergrund-Goroutinen sperren bei jeder Änderung.
 type App struct {
 	window *app.Window
 	th     *material.Theme
@@ -31,14 +30,20 @@ type App struct {
 	store      *chat.Store
 	client     *irc.Client
 	autojoin   []string
+	identPass  string // NickServ-Passwort, wird nach Verbindungsaufbau gesendet
 	connecting bool
 	loginErr   string
 	focusInput bool
 
+	// E2E Verschlüsselung (pro Chat abschaltbar über conv.NoE2E)
+	e2e  *e2e.Manager
+	jobs chan func() // Sende-Warteschlange (hält die Reihenfolge)
+
 	// Login
-	serverEd, nickEd, chansEd widget.Editor
-	tlsBox                    widget.Bool
-	connectBtn                widget.Clickable
+	serverEd, nickEd, passEd, chansEd, keyEd widget.Editor
+	tlsBox                                   widget.Bool
+	connectBtn                               widget.Clickable
+	loginList                                widget.List
 
 	// Chat
 	joinEd        widget.Editor
@@ -62,22 +67,30 @@ func newApp(w *app.Window) *App {
 		window:    w,
 		th:        newTheme(),
 		store:     chat.NewStore(),
+		jobs:      make(chan func(), 256),
 		rowClicks: map[string]*widget.Clickable{},
 		msgLists:  map[string]*widget.List{},
 		expl:      explorer.NewExplorer(w),
 		attClicks: map[*chat.Attachment]*widget.Clickable{},
 		imgOps:    map[*chat.Attachment]paint.ImageOp{},
 	}
-	for _, ed := range []*widget.Editor{&a.serverEd, &a.nickEd, &a.chansEd, &a.joinEd, &a.msgEd} {
+	go func() {
+		for job := range a.jobs {
+			job()
+		}
+	}()
+	for _, ed := range []*widget.Editor{&a.serverEd, &a.nickEd, &a.passEd, &a.chansEd, &a.keyEd, &a.joinEd, &a.msgEd} {
 		ed.SingleLine = true
+		ed.Submit = true
 	}
-	a.joinEd.Submit = true
-	a.msgEd.Submit = true
+	a.passEd.Mask = '•'
+	a.keyEd.Mask = '•'
 	a.serverEd.SetText("irc.libera.chat:6697")
-	a.nickEd.SetText(fmt.Sprintf("GioUser%d", rand.Intn(1000)))
+	a.nickEd.SetText(fmt.Sprintf("uwu%d", rand.Intn(1000)))
 	a.chansEd.SetText("#libera")
 	a.tlsBox.Value = true
 	a.convList.Axis = layout.Vertical
+	a.loginList.Axis = layout.Vertical
 	return a
 }
 
@@ -87,7 +100,7 @@ func Run(window *app.Window) error {
 	var ops op.Ops
 	for {
 		evt := window.Event()
-		a.expl.ListenEvents(evt) // nötig, damit der Dateidialog funktioniert
+		a.expl.ListenEvents(evt)
 		switch e := evt.(type) {
 		case app.DestroyEvent:
 			a.mu.Lock()
@@ -140,7 +153,6 @@ func (a *App) requestFocus(gtx layout.Context) {
 	}
 }
 
-// submitted prüft, ob im Editor Enter gedrückt wurde (Submit = true).
 func submitted(gtx layout.Context, ed *widget.Editor) bool {
 	done := false
 	for {
@@ -159,8 +171,13 @@ func submitted(gtx layout.Context, ed *widget.Editor) bool {
 
 // startConnect wird mit gehaltenem Lock aus dem Frame aufgerufen.
 func (a *App) startConnect() {
+	if a.connecting {
+		return
+	}
 	server := strings.TrimSpace(a.serverEd.Text())
 	nick := strings.TrimSpace(a.nickEd.Text())
+	password := strings.TrimSpace(a.passEd.Text())
+	keyPass := a.keyEd.Text()
 	var chans []string
 	for _, c := range strings.FieldsFunc(a.chansEd.Text(), func(r rune) bool { return r == ',' || r == ' ' }) {
 		if !strings.HasPrefix(c, "#") && !strings.HasPrefix(c, "&") {
@@ -173,8 +190,22 @@ func (a *App) startConnect() {
 		a.loginErr = "Server und Nickname werden benötigt."
 		return
 	}
+	if keyPass == "" {
+		a.loginErr = "Wähle ein Schlüssel-Passwort. Es schützt deine E2E-Schlüssel auf der Festplatte."
+		return
+	}
+
+	// E2E-Schlüsselspeicher öffnen. Schlägt das fehl, wird NICHT verbunden,
+	// damit nie versehentlich im Klartext geschrieben wird.
+	mgr, err := e2e.Open(e2ePath(), keyPass)
+	if err != nil {
+		a.loginErr = "Schlüsselspeicher: " + err.Error()
+		return
+	}
+	a.e2e = mgr
 	a.connecting = true
 	a.loginErr = ""
+	a.identPass = password
 
 	go func() {
 		c, err := irc.Dial(server, nick, useTLS)
@@ -188,6 +219,7 @@ func (a *App) startConnect() {
 		}
 		a.client = c
 		a.autojoin = chans
+
 		a.store = chat.NewStore()
 		a.msgLists = map[string]*widget.List{}
 		a.attClicks = map[*chat.Attachment]*widget.Clickable{}
@@ -219,12 +251,16 @@ func (a *App) handle(c *irc.Client, ev irc.Event) {
 	defer a.mu.Unlock()
 	defer a.window.Invalidate()
 	if a.client != c {
-		return // veraltete Verbindung
+		return
 	}
 	s := a.store
 	switch ev.Kind {
 	case irc.EvConnected:
-		s.Sys(s.Server(), "Verbunden als "+c.Nick())
+		s.Sys(s.Server(), "Verbunden als "+c.Nick()+" uwu")
+		if a.identPass != "" {
+			c.Privmsg("NickServ", "IDENTIFY "+c.Nick()+" "+a.identPass)
+			a.identPass = ""
+		}
 		for _, ch := range a.autojoin {
 			c.Join(ch)
 		}
@@ -234,42 +270,115 @@ func (a *App) handle(c *irc.Client, ev irc.Event) {
 	case irc.EvServer:
 		s.Sys(s.Server(), ev.Text)
 	case irc.EvMessage:
-		conv := s.Ensure(ev.Target)
-		msg := chat.Message{
-			Sender: ev.Nick, Text: ev.Text, Time: ev.Time,
-			Mine: strings.EqualFold(ev.Nick, c.Nick()),
-		}
-		if att := chat.ParseAttachment(ev.Text); att != nil && !msg.Mine {
-			msg.Attachment = att
-			msg.Text = "Bild: " + att.Name
-			if autoLoadPrivate && conv.Kind == chat.Private {
-				a.receive(att)
-			}
-		}
-		s.Post(conv, msg)
+		a.incoming(c, s.Ensure(ev.Target), ev)
 	case irc.EvJoinSelf:
 		conv := s.Ensure(ev.Target)
+		conv.ResetMembers()
 		s.Select(conv)
 		a.focusInput = true
 		s.Sys(conv, "Du bist "+ev.Target+" beigetreten")
+		if conv.Kind == chat.Channel && a.e2e != nil {
+			s.Sys(conv, "Gruppen-E2E ist an – nur Urineless-Nutzer können mitlesen. (/e2e off zum Abschalten)")
+		}
 	case irc.EvPartSelf:
 		if conv := s.Find(ev.Target); conv != nil {
 			s.Remove(conv)
 		}
+	case irc.EvNames:
+		if conv := s.Find(ev.Target); conv != nil {
+			for _, n := range strings.Fields(ev.Text) {
+				conv.AddMember(n)
+			}
+		}
 	case irc.EvJoin:
 		if conv := s.Find(ev.Target); conv != nil {
+			conv.AddMember(ev.Nick)
 			s.Sys(conv, ev.Nick+" ist beigetreten")
 		}
 	case irc.EvPart:
 		if conv := s.Find(ev.Target); conv != nil {
+			conv.DelMember(ev.Nick)
+			a.rekey(conv, ev.Nick)
 			s.Sys(conv, ev.Nick+" hat den Kanal verlassen")
+		}
+	case irc.EvKick:
+		if conv := s.Find(ev.Target); conv != nil {
+			conv.DelMember(ev.Nick)
+			a.rekey(conv, ev.Nick)
+			s.Sys(conv, ev.Nick+" wurde aus dem Kanal geworfen")
+		}
+	case irc.EvQuit:
+		for _, conv := range s.Convs {
+			if conv.Kind == chat.Channel && conv.DelMember(ev.Nick) {
+				a.rekey(conv, ev.Nick)
+				s.Sys(conv, ev.Nick+" hat den Server verlassen")
+			}
+		}
+	case irc.EvNick:
+		for _, conv := range s.Convs {
+			if conv.Kind == chat.Channel && conv.RenameMember(ev.Nick, ev.Text) {
+				s.Sys(conv, ev.Nick+" heißt jetzt "+ev.Text)
+			}
+		}
+		if a.e2e != nil {
+			a.e2e.Group.RenamePeer(ev.Nick, ev.Text)
 		}
 	}
 }
 
+// incoming verarbeitet eine PRIVMSG: Signal-Zeilen (privat), Gruppen-Zeilen (Kanal) oder Klartext.
+func (a *App) incoming(c *irc.Client, conv *chat.Conversation, ev irc.Event) {
+	s := a.store
+	switch {
+	case a.e2e != nil && conv.Kind == chat.Private && strings.HasPrefix(ev.Text, e2e.Prefix):
+		res := a.e2e.Receive(ev.Nick, ev.Text)
+		if len(res.Reply) > 0 {
+			lines, nick := res.Reply, ev.Nick
+			a.enqueue(func() { a.sendLines(c, nick, lines) })
+		}
+		if res.Note != "" {
+			s.Sys(conv, res.Note)
+		}
+		if res.HasText && !a.handleControl(c, ev.Nick, res.Text) {
+			a.post(c, conv, ev.Nick, res.Text, ev.Time, true)
+		}
+	case a.e2e != nil && conv.Kind == chat.Channel && strings.HasPrefix(ev.Text, e2e.GroupPrefix):
+		res := a.e2e.Group.Receive(conv.Name, ev.Nick, ev.Text)
+		if res.Note != "" {
+			s.Sys(conv, res.Note)
+		}
+		if res.NeedKey {
+			a.sendEncrypted(c, ev.Nick, e2e.FormatSKReq(conv.Name))
+		}
+		if res.HasText {
+			a.post(c, conv, ev.Nick, res.Text, ev.Time, true)
+		}
+	default:
+		a.post(c, conv, ev.Nick, ev.Text, ev.Time, false)
+	}
+}
+
+// post legt eine eingehende Nachricht im Chat ab (inkl. Aktionen und Wormhole-Anhänge).
+func (a *App) post(c *irc.Client, conv *chat.Conversation, nick, text string, t time.Time, enc bool) {
+	if strings.HasPrefix(text, "\x01ACTION ") { // verschlüsselte /me-Aktion
+		text = "* " + nick + " " + strings.TrimSuffix(strings.TrimPrefix(text, "\x01ACTION "), "\x01")
+	}
+	msg := chat.Message{
+		Sender: nick, Text: text, Time: t, Enc: enc,
+		Mine: strings.EqualFold(nick, c.Nick()),
+	}
+	if att := chat.ParseAttachment(text); att != nil && !msg.Mine {
+		msg.Attachment = att
+		msg.Text = "Bild: " + att.Name
+		if autoLoadPrivate && conv.Kind == chat.Private {
+			a.receive(att)
+		}
+	}
+	a.store.Post(conv, msg)
+}
+
 // ---- Eingaben des Nutzers ----
 
-// openOrJoin: "#kanal" betreten, sonst Privatchat öffnen.
 func (a *App) openOrJoin(name string) {
 	defer a.window.Invalidate()
 	name = strings.TrimSpace(name)
@@ -295,8 +404,9 @@ func (a *App) submit(text string) {
 		a.store.Sys(conv, "Hier kann nicht geschrieben werden. Nutze /join #kanal oder /msg nick text (/help).")
 		return
 	}
-	a.client.Privmsg(conv.Name, text)
-	a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true})
+	enc := a.secure(conv)
+	a.deliver(conv, a.client, text)
+	a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true, Enc: enc})
 }
 
 func (a *App) command(conv *chat.Conversation, line string) {
@@ -321,7 +431,7 @@ func (a *App) command(conv *chat.Conversation, line string) {
 			return
 		}
 		if conv.Kind == chat.Channel {
-			a.client.Part(conv.Name) // Entfernen passiert beim EvPartSelf
+			a.client.Part(conv.Name)
 		} else {
 			a.store.Remove(conv)
 		}
@@ -334,15 +444,17 @@ func (a *App) command(conv *chat.Conversation, line string) {
 		a.store.Select(target)
 		a.focusInput = true
 		if text := strings.TrimSpace(strings.TrimPrefix(rest, args[0])); text != "" {
-			a.client.Privmsg(target.Name, text)
-			a.store.Post(target, chat.Message{Sender: a.client.Nick(), Text: text, Mine: true})
+			enc := a.secure(target)
+			a.deliver(target, a.client, text)
+			a.store.Post(target, chat.Message{Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true, Enc: enc})
 		}
 	case "me":
 		if conv.Kind == chat.Server || rest == "" {
 			return
 		}
-		a.client.Privmsg(conv.Name, "\x01ACTION "+rest+"\x01")
-		a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: "* " + a.client.Nick() + " " + rest, Mine: true})
+		enc := a.secure(conv)
+		a.deliver(conv, a.client, "\x01ACTION "+rest+"\x01")
+		a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: "* " + a.client.Nick() + " " + rest, Time: time.Now(), Mine: true, Enc: enc})
 	case "img", "image", "bild":
 		path := strings.Trim(rest, "\"' ")
 		if conv.Kind == chat.Server || path == "" {
@@ -356,7 +468,9 @@ func (a *App) command(conv *chat.Conversation, line string) {
 		}
 	case "raw", "quote":
 		a.client.Raw("%s", rest)
+	case "e2e":
+		a.e2eCommand(conv, args)
 	default:
-		a.store.Sys(conv, "Befehle: /join #kanal, /part, /msg nick text, /me text, /img pfad, /nick name, /raw ...")
+		a.store.Sys(conv, "Befehle: /join #kanal, /part, /msg nick text, /me text, /img pfad, /nick name, /e2e ...")
 	}
 }

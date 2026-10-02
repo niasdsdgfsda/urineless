@@ -21,7 +21,11 @@ const (
 	EvJoin                     // jemand anderes betritt Kanal
 	EvPart                     // jemand anderes verlässt Kanal
 	EvJoinSelf                 // wir betreten Kanal
-	EvPartSelf                 // wir verlassen Kanal
+	EvPartSelf                 // wir verlassen Kanal (auch nach KICK)
+	EvNames                    // Teil der Mitgliederliste (Text = Nicks mit Leerzeichen)
+	EvQuit                     // jemand verlässt den Server
+	EvNick                     // Nickwechsel (Nick = alt, Text = neu)
+	EvKick                     // jemand anderes wurde gekickt (Nick = Opfer)
 )
 
 type Event struct {
@@ -57,7 +61,7 @@ func Dial(addr, nick string, useTLS bool) (*Client, error) {
 	}
 	c := &Client{conn: conn, nick: nick, Events: make(chan Event, 256)}
 	c.Raw("NICK %s", nick)
-	c.Raw("USER %s 0 * :IRCgram", nick)
+	c.Raw("USER %s 0 * :urineless", nick)
 	go c.readLoop()
 	return c, nil
 }
@@ -80,12 +84,12 @@ func (c *Client) Raw(format string, args ...any) {
 	fmt.Fprint(c.conn, lineSanitizer.Replace(fmt.Sprintf(format, args...))+"\r\n")
 }
 
-func (c *Client) Join(ch string)              { c.Raw("JOIN %s", ch) }
-func (c *Client) Part(ch string)              { c.Raw("PART %s", ch) }
-func (c *Client) Privmsg(to, text string)     { c.Raw("PRIVMSG %s :%s", to, text) }
-func (c *Client) SetNick(n string)            { c.Raw("NICK %s", n) }
+func (c *Client) Join(ch string)          { c.Raw("JOIN %s", ch) }
+func (c *Client) Part(ch string)          { c.Raw("PART %s", ch) }
+func (c *Client) Privmsg(to, text string) { c.Raw("PRIVMSG %s :%s", to, text) }
+func (c *Client) SetNick(n string)        { c.Raw("NICK %s", n) }
 func (c *Client) Quit() {
-	c.Raw("QUIT :tschüss")
+	c.Raw("QUIT :bye bye uwu")
 	c.conn.Close()
 }
 
@@ -178,11 +182,34 @@ func (c *Client) handle(line string) {
 			k = EvPartSelf
 		}
 		c.emit(Event{Kind: k, Target: params[0], Nick: nick})
-	case "NICK":
-		if self && len(params) > 0 {
-			c.setNick(params[0])
-			c.emit(Event{Kind: EvServer, Text: "Du heißt jetzt " + params[0]})
+	case "KICK":
+		if len(params) < 2 {
+			return
 		}
+		reason := ""
+		if len(params) > 2 {
+			reason = params[2]
+		}
+		if strings.EqualFold(params[1], c.Nick()) {
+			c.emit(Event{Kind: EvPartSelf, Target: params[0], Nick: nick, Text: reason})
+			return
+		}
+		c.emit(Event{Kind: EvKick, Target: params[0], Nick: params[1], Text: reason})
+	case "QUIT":
+		c.emit(Event{Kind: EvQuit, Nick: nick})
+	case "NICK":
+		if len(params) > 0 {
+			if self {
+				c.setNick(params[0])
+				c.emit(Event{Kind: EvServer, Text: "Du heißt jetzt " + params[0]})
+			}
+			c.emit(Event{Kind: EvNick, Nick: nick, Text: params[0]})
+		}
+	case "353": // RPL_NAMREPLY: <me> <=|*|@> <#kanal> :<nicks>
+		if len(params) >= 4 {
+			c.emit(Event{Kind: EvNames, Target: params[2], Text: params[3]})
+		}
+	case "366": // Ende der NAMES-Liste
 	default:
 		if isNumeric(cmd) && len(params) > 1 {
 			c.emit(Event{Kind: EvServer, Text: strings.Join(params[1:], " ")})

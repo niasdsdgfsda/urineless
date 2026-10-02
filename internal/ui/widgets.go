@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"strings"
 
+	"gioui.org/f32"
 	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -51,6 +52,44 @@ func VLine(gtx layout.Context, col color.NRGBA) layout.Dimensions {
 	return layout.Dimensions{Size: size}
 }
 
+// Logo zeichnet den urineless-Tropfen mit uwu-Gesicht (reine Vektorgrafik, keine Assets).
+func Logo(gtx layout.Context, size unit.Dp) layout.Dimensions {
+	s := float32(gtx.Dp(size))
+	pt := func(x, y float32) f32.Point { return f32.Pt(x*s, y*s) }
+	dot := func(cx, cy, rx, ry float32, col color.NRGBA) {
+		rect := image.Rect(int((cx-rx)*s), int((cy-ry)*s), int((cx+rx)*s), int((cy+ry)*s))
+		paint.FillShape(gtx.Ops, col, clip.Ellipse(rect).Op(gtx.Ops))
+	}
+
+	// Tropfen
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	p.MoveTo(pt(.50, .02))
+	p.CubeTo(pt(.60, .30), pt(.92, .48), pt(.92, .66))
+	p.CubeTo(pt(.92, .86), pt(.74, .98), pt(.50, .98))
+	p.CubeTo(pt(.26, .98), pt(.08, .86), pt(.08, .66))
+	p.CubeTo(pt(.08, .48), pt(.40, .30), pt(.50, .02))
+	p.Close()
+	paint.FillShape(gtx.Ops, colorLogo, clip.Outline{Path: p.End()}.Op())
+
+	// Glanzpunkt, Bäckchen, Augen
+	dot(.30, .55, .045, .075, colorShine)
+	dot(.25, .74, .07, .045, colorCheek)
+	dot(.75, .74, .07, .045, colorCheek)
+	dot(.37, .64, .045, .06, colorFace)
+	dot(.63, .64, .045, .06, colorFace)
+
+	// "w"-Mund
+	var m clip.Path
+	m.Begin(gtx.Ops)
+	m.MoveTo(pt(.43, .72))
+	m.QuadTo(pt(.465, .80), pt(.50, .72))
+	m.QuadTo(pt(.535, .80), pt(.57, .72))
+	paint.FillShape(gtx.Ops, colorFace, clip.Stroke{Path: m.End(), Width: s * 0.025}.Op())
+
+	return layout.Dimensions{Size: image.Pt(int(s), int(s))}
+}
+
 func initials(name string) string {
 	name = strings.TrimLeft(name, "#&@+")
 	if name == "" {
@@ -75,7 +114,7 @@ func Avatar(gtx layout.Context, th *material.Theme, name string, size unit.Dp) l
 	return layout.Dimensions{Size: image.Pt(sz, sz)}
 }
 
-// Badge ist der blaue Ungelesen-Zähler.
+// Badge ist der Ungelesen-Zähler.
 func Badge(gtx layout.Context, th *material.Theme, n int, bg color.NRGBA) layout.Dimensions {
 	return Pill(gtx, bg, 100, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Top: 1, Bottom: 1, Left: 7, Right: 7}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -105,8 +144,8 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-// Bubble zeichnet eine Chat-Blase mit optionalem Absendernamen und Uhrzeit.
-func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName bool, body layout.Widget) layout.Dimensions {
+// Bubble zeichnet eine Chat-Blase. tag steht vor der Uhrzeit (z. B. "e2e").
+func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName bool, tag string, body layout.Widget) layout.Dimensions {
 	if body == nil {
 		body = material.Body1(th, m.Text).Layout
 	}
@@ -114,12 +153,16 @@ func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName boo
 	if m.Mine {
 		bg = colorOutgoing
 	}
+	foot := m.Time.Format("15:04")
+	if tag != "" {
+		foot = tag + " · " + foot
+	}
 	maxW := max(gtx.Constraints.Max.X*72/100, min(gtx.Constraints.Max.X, gtx.Dp(160)))
 	gtx.Constraints.Min = image.Point{}
 	gtx.Constraints.Max.X = maxW
 
-	return Pill(gtx, bg, 14, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: 6, Bottom: 4, Left: 10, Right: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return Pill(gtx, bg, 18, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: 7, Bottom: 5, Left: 12, Right: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					if !showName {
@@ -134,7 +177,7 @@ func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName boo
 					return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx,
 						layout.Rigid(body),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							l := material.Caption(th, m.Time.Format("15:04"))
+							l := material.Caption(th, foot)
 							l.Color = colorMuted
 							return l.Layout(gtx)
 						}),
@@ -145,13 +188,13 @@ func Bubble(gtx layout.Context, th *material.Theme, m chat.Message, showName boo
 	})
 }
 
-// SystemNote ist die zentrierte graue Pille für Join/Part/Server-Meldungen.
+// SystemNote ist die zentrierte Pille für Join/Part/Server-Meldungen.
 func SystemNote(gtx layout.Context, th *material.Theme, text string) layout.Dimensions {
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 	return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Max.X = gtx.Constraints.Max.X * 9 / 10
 		return Pill(gtx, colorSystemBG, 100, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: 3, Bottom: 3, Left: 10, Right: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: 3, Bottom: 3, Left: 12, Right: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				l := material.Caption(th, text)
 				l.Color = colorWhite
 				return l.Layout(gtx)
@@ -160,10 +203,10 @@ func SystemNote(gtx layout.Context, th *material.Theme, text string) layout.Dime
 	})
 }
 
-// Field ist ein Eingabefeld im grauen Pillen-Look.
+// Field ist ein Eingabefeld im Pillen-Look über die volle Breite.
 func Field(gtx layout.Context, w layout.Widget) layout.Dimensions {
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
-	return Pill(gtx, colorField, 10, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: 10, Bottom: 10, Left: 14, Right: 14}.Layout(gtx, w)
+	return Pill(gtx, colorField, 22, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: 11, Bottom: 11, Left: 18, Right: 18}.Layout(gtx, w)
 	})
 }

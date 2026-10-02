@@ -3,6 +3,7 @@
 package chat
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,6 +24,7 @@ type Message struct {
 	Time   time.Time
 	Mine   bool
 	System bool
+	Enc    bool // Ende-zu-Ende verschlüsselt übertragen
 
 	Attachment *Attachment // nil bei normalem Text
 }
@@ -32,6 +34,9 @@ type Conversation struct {
 	Kind     Kind
 	Messages []Message
 	Unread   int
+	NoE2E    bool // E2E für diesen Chat abgeschaltet (/e2e off)
+
+	members map[string]string // nick(klein) -> Anzeigename
 }
 
 func (c *Conversation) Key() string {
@@ -47,6 +52,57 @@ func (c *Conversation) Last() (Message, bool) {
 	}
 	return c.Messages[len(c.Messages)-1], true
 }
+
+// ---- Mitglieder (nur für Kanäle sinnvoll) ----
+
+func cleanNick(n string) string { return strings.TrimLeft(n, "@+%&~") }
+
+func (c *Conversation) ResetMembers() { c.members = map[string]string{} }
+
+func (c *Conversation) AddMember(n string) {
+	n = cleanNick(n)
+	if n == "" {
+		return
+	}
+	if c.members == nil {
+		c.members = map[string]string{}
+	}
+	c.members[strings.ToLower(n)] = n
+}
+
+// DelMember entfernt n und meldet, ob n Mitglied war.
+func (c *Conversation) DelMember(n string) bool {
+	k := strings.ToLower(cleanNick(n))
+	_, ok := c.members[k]
+	delete(c.members, k)
+	return ok
+}
+
+func (c *Conversation) HasMember(n string) bool {
+	_, ok := c.members[strings.ToLower(cleanNick(n))]
+	return ok
+}
+
+func (c *Conversation) RenameMember(oldNick, newNick string) bool {
+	if !c.DelMember(oldNick) {
+		return false
+	}
+	c.AddMember(newNick)
+	return true
+}
+
+func (c *Conversation) MemberCount() int { return len(c.members) }
+
+func (c *Conversation) MemberList() []string {
+	out := make([]string, 0, len(c.members))
+	for _, n := range c.members {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ---- Store ----
 
 type Store struct {
 	Convs  []*Conversation // Index 0 ist immer der Server-Chat
