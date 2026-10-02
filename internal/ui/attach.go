@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"strings"
+
 	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/widget"
@@ -19,6 +21,7 @@ import (
 	"gioui.org/x/explorer"
 
 	"ircgram/internal/chat"
+	"ircgram/internal/fixupx"
 	"ircgram/internal/irc"
 	"ircgram/internal/transfer"
 )
@@ -394,6 +397,12 @@ func (a *App) receiveURL(att *chat.Attachment) {
 }
 
 func downloadImageURL(ctx context.Context, u string) (image.Image, *gif.GIF, []image.Image, error) {
+	if isTwitterURL(u) {
+		fxClient := fixupx.NewClient()
+		if res, err := fxClient.Resolve(ctx, u); err == nil && res.URL != "" {
+			u = res.URL
+		}
+	}
 	if cachedImg, cachedAnim, cachedFrames, _, ok := getCachedImage(u); ok {
 		return cachedImg, cachedAnim, cachedFrames, nil
 	}
@@ -401,7 +410,7 @@ func downloadImageURL(ctx context.Context, u string) (image.Image, *gif.GIF, []i
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	req.Header.Set("User-Agent", "urineless/0.1")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, nil, nil, err
@@ -420,4 +429,13 @@ func downloadImageURL(ctx context.Context, u string) (image.Image, *gif.GIF, []i
 	}
 	setCachedImage(u, img, animated, frames, nil)
 	return img, animated, frames, nil
+}
+
+func isTwitterURL(u string) bool {
+	lower := strings.ToLower(u)
+	return strings.Contains(lower, "fixupx.com") ||
+		strings.Contains(lower, "vxtwitter.com") ||
+		strings.Contains(lower, "fxtwitter.com") ||
+		strings.Contains(lower, "twitter.com") ||
+		strings.Contains(lower, "x.com")
 }

@@ -55,26 +55,38 @@ var imgURLRe = regexp.MustCompile(`^\[img\]\s+(https?://\S+)$`)
 var plainURLRe = regexp.MustCompile(`^https?://\S+$`)
 
 var autoLoadHosts = map[string]bool{
-	"nekos.best":        true,
-	"cataas.com":        true,
-	"media.tenor.com":   true,
-	"c.tenor.com":       true,
-	"media.giphy.com":   true,
-	"i.giphy.com":       true,
-	"gifcities.org":     true,
-	"blob.gifcities.org": true,
-	"web.archive.org":   true,
+	"nekos.best":         true,
+	"cataas.com":         true,
+	"media.tenor.com":    true,
+	"c.tenor.com":        true,
+	"media.giphy.com":    true,
+	"i.giphy.com":        true,
+	"gifcities.org":      true,
+	"blob.gifcities.org":  true,
+	"web.archive.org":    true,
+	"cdn.bsky.app":       true,
+	"bsky.app":           true,
+	"fixupx.com":         true,
+	"vxtwitter.com":      true,
+	"fxtwitter.com":      true,
+	"x.com":              true,
 }
 var imageHosts = map[string]bool{
-	"nekos.best":        true,
-	"cataas.com":        true,
-	"media.tenor.com":   true,
-	"c.tenor.com":       true,
-	"media.giphy.com":   true,
-	"i.giphy.com":       true,
-	"gifcities.org":     true,
-	"blob.gifcities.org": true,
-	"web.archive.org":   true,
+	"nekos.best":         true,
+	"cataas.com":         true,
+	"media.tenor.com":    true,
+	"c.tenor.com":        true,
+	"media.giphy.com":    true,
+	"i.giphy.com":        true,
+	"gifcities.org":      true,
+	"blob.gifcities.org":  true,
+	"web.archive.org":    true,
+	"cdn.bsky.app":       true,
+	"bsky.app":           true,
+	"fixupx.com":         true,
+	"vxtwitter.com":      true,
+	"fxtwitter.com":      true,
+	"x.com":              true,
 }
 
 func FormatImageURL(u string) string {
@@ -104,11 +116,15 @@ func ParseAttachment(text string) *Attachment {
 			if tenorHost && pu.Path != "" && pu.Path != "/" {
 				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
 			}
-			ext := strings.ToLower(path.Ext(pu.Path))
 			lowerT := strings.ToLower(t)
-			if ext == ".gif" || ext == ".jpeg" || ext == ".jpg" || ext == ".png" || ext == ".webp" || ext == ".img" ||
-				strings.Contains(lowerT, ".gif") || strings.Contains(lowerT, ".png") || strings.Contains(lowerT, ".jpg") ||
-				strings.Contains(lowerT, "img?") || strings.Contains(lowerT, "image") {
+			if strings.Contains(lowerT, "gif") ||
+				strings.Contains(lowerT, "png") ||
+				strings.Contains(lowerT, "jpg") ||
+				strings.Contains(lowerT, "jpeg") ||
+				strings.Contains(lowerT, "webp") ||
+				strings.Contains(lowerT, "img") ||
+				strings.Contains(lowerT, "image") ||
+				host == "cdn.bsky.app" || host == "bsky.app" {
 				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
 			}
 		}

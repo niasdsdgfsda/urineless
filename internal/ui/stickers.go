@@ -48,8 +48,8 @@ type stickerPicker struct {
 	page    int
 	loadID  uint64
 
-	search widget.Editor
-	list   widget.List
+	search    widget.Editor
+	list      widget.List
 	lastQuery string
 
 	nekos      *nekos.Client
@@ -58,13 +58,15 @@ type stickerPicker struct {
 	localBtn   widget.Clickable
 	nekosBtn   widget.Clickable
 	ddgBtn     widget.Clickable
-	searchBtn widget.Clickable
-	moreBtn   widget.Clickable
-	closeBtn  widget.Clickable
-	backdrop  widget.Clickable
-	prevBtn   widget.Clickable
-	nextBtn   widget.Clickable
-	moreIndex int
+	bskyBtn    widget.Clickable
+	fixupBtn   widget.Clickable
+	searchBtn  widget.Clickable
+	moreBtn    widget.Clickable
+	closeBtn   widget.Clickable
+	backdrop   widget.Clickable
+	prevBtn    widget.Clickable
+	nextBtn    widget.Clickable
+	moreIndex  int
 }
 
 func newStickerPicker() *stickerPicker {
@@ -271,10 +273,39 @@ func (p *stickerPicker) startDDGLoad(a *App, query string) {
 	p.page = 0
 	p.loadID++
 	id := p.loadID
-	go p.loadDDG(a, query, id)
+	if query == "" {
+		query = "cat"
+	}
+	go p.loadSearch(a, query, id, 2, "DuckDuckGo")
 }
 
-func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
+func (p *stickerPicker) startBSkyLoad(a *App, query string) {
+	p.tab = 3
+	p.loading = true
+	p.errMsg = ""
+	p.page = 0
+	p.loadID++
+	id := p.loadID
+	if query == "" {
+		query = "cat"
+	}
+	go p.loadSearch(a, "bsky.app "+query, id, 3, "Bluesky")
+}
+
+func (p *stickerPicker) startFixupLoad(a *App, query string) {
+	p.tab = 4
+	p.loading = true
+	p.errMsg = ""
+	p.page = 0
+	p.loadID++
+	id := p.loadID
+	if query == "" {
+		query = "cat"
+	}
+	go p.loadSearch(a, "fixupx.com "+query, id, 4, "FixupX")
+}
+
+func (p *stickerPicker) loadSearch(a *App, query string, id uint64, tab int, sourceName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -282,12 +313,12 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 	if err != nil || len(res) == 0 {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if p.open && p.tab == 2 && p.loadID == id {
+		if p.open && p.tab == tab && p.loadID == id {
 			p.loading = false
 			if err != nil {
-				p.errMsg = "DuckDuckGo: " + err.Error()
+				p.errMsg = sourceName + ": " + err.Error()
 			} else {
-				p.errMsg = "DuckDuckGo hat keine GIFs gefunden."
+				p.errMsg = sourceName + " hat keine GIFs gefunden."
 			}
 			a.window.Invalidate()
 		}
@@ -298,13 +329,13 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 	for i, r := range res {
 		name := r.Description
 		if name == "" {
-			name = "DuckDuckGo GIF"
+			name = sourceName + " GIF"
 		}
 		entries[i] = &stickerEntry{name: name, url: r.URL}
 	}
 
 	a.mu.Lock()
-	if !p.open || p.tab != 2 || p.loadID != id {
+	if !p.open || p.tab != tab || p.loadID != id {
 		a.mu.Unlock()
 		return
 	}
@@ -316,13 +347,11 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 
 	// Concurrent image downloader (8 workers) with memory cache
 	type downloadJob struct {
-		entry      *stickerEntry
-		previewURL string
+		entry *stickerEntry
 	}
 	jobs := make(chan downloadJob, len(res))
-	for i, r := range res {
-		e := entries[i]
-		if cachedImg, cachedAnim, cachedFrames, cachedOps, ok := getCachedImage(r.PreviewURL); ok {
+	for _, e := range entries {
+		if cachedImg, cachedAnim, cachedFrames, cachedOps, ok := getCachedImage(e.url); ok {
 			a.mu.Lock()
 			e.img = cachedImg
 			e.animated = cachedAnim
@@ -331,7 +360,7 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 			a.mu.Unlock()
 			continue
 		}
-		jobs <- downloadJob{entry: e, previewURL: r.PreviewURL}
+		jobs <- downloadJob{entry: e}
 	}
 	close(jobs)
 
@@ -345,7 +374,7 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				if cachedImg, cachedAnim, cachedFrames, cachedOps, ok := getCachedImage(job.previewURL); ok {
+				if cachedImg, cachedAnim, cachedFrames, cachedOps, ok := getCachedImage(job.entry.url); ok {
 					a.mu.Lock()
 					job.entry.img = cachedImg
 					job.entry.animated = cachedAnim
@@ -357,10 +386,10 @@ func (p *stickerPicker) loadDDG(a *App, query string, id uint64) {
 					a.mu.Unlock()
 					continue
 				}
-				data, derr := downloadGIF(ctx, job.previewURL)
+				data, derr := downloadGIF(ctx, job.entry.url)
 				if derr == nil {
 					if img, animated, frames := decodeImage(data); img != nil {
-						setCachedImage(job.previewURL, img, animated, frames, nil)
+						setCachedImage(job.entry.url, img, animated, frames, nil)
 						a.mu.Lock()
 						job.entry.img = img
 						job.entry.animated = animated
@@ -470,7 +499,7 @@ func (p *stickerPicker) header(gtx layout.Context, a *App, th *material.Theme) l
 							p.loadLocal(a)
 						})
 					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						bg, fg := colorField, colorTextMain
 						if p.tab == 1 {
@@ -480,14 +509,34 @@ func (p *stickerPicker) header(gtx layout.Context, a *App, th *material.Theme) l
 							p.startNekos(a, "hug")
 						})
 					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						bg, fg := colorField, colorTextMain
 						if p.tab == 2 {
 							bg, fg = colorAccent, colorWhite
 						}
-						return p.button(gtx, th, &p.ddgBtn, "DuckDuckGo", bg, fg, func() {
+						return p.button(gtx, th, &p.ddgBtn, "DDG", bg, fg, func() {
 							p.startDDGLoad(a, "cat")
+						})
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						bg, fg := colorField, colorTextMain
+						if p.tab == 3 {
+							bg, fg = colorAccent, colorWhite
+						}
+						return p.button(gtx, th, &p.bskyBtn, "Bluesky", bg, fg, func() {
+							p.startBSkyLoad(a, "cat")
+						})
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						bg, fg := colorField, colorTextMain
+						if p.tab == 4 {
+							bg, fg = colorAccent, colorWhite
+						}
+						return p.button(gtx, th, &p.fixupBtn, "FixupX", bg, fg, func() {
+							p.startFixupLoad(a, "cat")
 						})
 					}),
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -501,23 +550,39 @@ func (p *stickerPicker) header(gtx layout.Context, a *App, th *material.Theme) l
 				)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				if p.tab != 1 && p.tab != 2 {
+				if p.tab < 1 {
 					return layout.Dimensions{}
 				}
 				hint := "Kategorie"
-				if p.tab == 2 {
+				switch p.tab {
+				case 2:
 					hint = "DuckDuckGo-Suche"
+				case 3:
+					hint = "Bluesky-Suche"
+				case 4:
+					hint = "FixupX-Suche"
 				}
 				search := func() {
 					query := strings.TrimSpace(p.search.Text())
 					p.page = 0
-					if p.tab == 1 {
+					switch p.tab {
+					case 1:
 						p.startNekos(a, query)
-					} else {
+					case 2:
 						if query == "" {
 							query = "cat"
 						}
 						p.startDDGLoad(a, query)
+					case 3:
+						if query == "" {
+							query = "cat"
+						}
+						p.startBSkyLoad(a, query)
+					case 4:
+						if query == "" {
+							query = "cat"
+						}
+						p.startFixupLoad(a, query)
 					}
 				}
 				more := func(gtx layout.Context) layout.Dimensions {
@@ -551,11 +616,20 @@ func (p *stickerPicker) header(gtx layout.Context, a *App, th *material.Theme) l
 										if query != p.lastQuery {
 											p.lastQuery = query
 											p.page = 0
-											if p.tab == 1 {
+											switch p.tab {
+											case 1:
 												p.startNekos(a, query)
-											} else if p.tab == 2 {
+											case 2:
 												if query != "" {
 													p.startDDGLoad(a, query)
+												}
+											case 3:
+												if query != "" {
+													p.startBSkyLoad(a, query)
+												}
+											case 4:
+												if query != "" {
+													p.startFixupLoad(a, query)
 												}
 											}
 										}
@@ -608,10 +682,15 @@ func (p *stickerPicker) grid(gtx layout.Context, a *App, th *material.Theme) lay
 	}
 	if len(p.entries) == 0 {
 		hint := "Keine lokalen Sticker."
-		if p.tab == 1 {
+		switch p.tab {
+		case 1:
 			hint = "Keine Nekos-Ergebnisse."
-		} else if p.tab == 2 {
+		case 2:
 			hint = "Keine DuckDuckGo-Ergebnisse."
+		case 3:
+			hint = "Keine Bluesky-Ergebnisse."
+		case 4:
+			hint = "Keine FixupX-Ergebnisse."
 		}
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			l := material.Body2(th, hint)
