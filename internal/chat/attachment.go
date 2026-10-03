@@ -107,33 +107,21 @@ func ParseAttachment(text string) *Attachment {
 	}
 	if plainURLRe.MatchString(t) {
 		pu, err := url.Parse(t)
-		host := ""
-		if err == nil {
-			host = strings.ToLower(pu.Hostname())
-		}
-		tenorHost := isTenorMediaHost(host)
-		if err == nil && (pu.Scheme == "https" || pu.Scheme == "http") {
-			if tenorHost && pu.Path != "" && pu.Path != "/" {
-				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
-			}
-			lowerT := strings.ToLower(t)
-			if strings.Contains(lowerT, "gif") ||
-				strings.Contains(lowerT, "png") ||
-				strings.Contains(lowerT, "jpg") ||
-				strings.Contains(lowerT, "jpeg") ||
-				strings.Contains(lowerT, "webp") ||
-				strings.Contains(lowerT, "img") ||
-				strings.Contains(lowerT, "image") ||
-				host == "cdn.bsky.app" || host == "bsky.app" {
-				return &Attachment{URL: t, Name: nameFromURL(t), Sticker: true, State: AttIdle}
-			}
+		if err == nil && (pu.Scheme == "https" || pu.Scheme == "http") && pu.Host != "" {
+			return &Attachment{URL: t, Name: nameFromURL(t), Sticker: isStickerURL(t), State: AttIdle}
 		}
 	}
 	return nil
 }
 
 func isStickerURL(rawURL string) bool {
-	return true
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	ext := strings.ToLower(path.Ext(u.Path))
+	return isTenorMediaHost(host) || host == "nekos.best" || host == "gifcities.org" || host == "blob.gifcities.org" || host == "web.archive.org" || ext == ".gif"
 }
 
 func (a *Attachment) AutoLoad() bool {

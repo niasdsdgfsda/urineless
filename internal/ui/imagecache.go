@@ -146,3 +146,42 @@ func renderImage(gtx layout.Context, invalidate func(), op *paint.ImageOp, img i
 	}
 	return widget.Image{Src: *op, Fit: widget.Contain, Scale: gtx.Metric.PxPerDp}.Layout(gtx)
 }
+
+func renderImageCover(gtx layout.Context, invalidate func(), op *paint.ImageOp, img image.Image, animated *gif.GIF, frames []image.Image, ops *[]paint.ImageOp, frameIdx *int, lastUpdate *time.Time) layout.Dimensions {
+	if animated != nil && len(frames) > 1 {
+		if len(*ops) != len(frames) {
+			newOps := make([]paint.ImageOp, len(frames))
+			for i, f := range frames {
+				newOps[i] = paint.NewImageOp(f)
+			}
+			*ops = newOps
+		}
+		now := gtx.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		d := animated.Delay[*frameIdx]
+		if d <= 0 {
+			d = 6
+		}
+		delay := time.Duration(d) * 10 * time.Millisecond
+		if delay < 20*time.Millisecond {
+			delay = 20*time.Millisecond
+		}
+		if lastUpdate.IsZero() {
+			*lastUpdate = now
+		}
+		if now.Sub(*lastUpdate) >= delay {
+			*frameIdx = (*frameIdx + 1) % len(frames)
+			*lastUpdate = now
+		}
+		if invalidate != nil {
+			invalidate()
+		}
+		return widget.Image{Src: (*ops)[*frameIdx], Fit: widget.Cover, Scale: gtx.Metric.PxPerDp}.Layout(gtx)
+	}
+	if *op == (paint.ImageOp{}) && img != nil {
+		*op = paint.NewImageOp(img)
+	}
+	return widget.Image{Src: *op, Fit: widget.Cover, Scale: gtx.Metric.PxPerDp}.Layout(gtx)
+}

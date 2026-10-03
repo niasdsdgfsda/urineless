@@ -100,6 +100,15 @@ func (a *App) sendLines(client *irc.Client, peer string, lines []string) {
 // Gibt true zurück, wenn text eine Steuernachricht war (dann nicht anzeigen).
 func (a *App) handleControl(c *irc.Client, nick, text string) bool {
 	s := a.store
+	if strings.HasPrefix(text, "[delete:") && strings.HasSuffix(text, "]") {
+		id := strings.TrimSuffix(strings.TrimPrefix(text, "[delete:"), "]")
+		for _, conv := range s.Convs {
+			if s.DeleteMessage(conv, id) {
+				a.window.Invalidate()
+			}
+		}
+		return true
+	}
 	if ch, key, ok := e2e.ParseSKey(text); ok {
 		if conv := s.Find(ch); conv != nil && conv.Kind == chat.Channel {
 			for _, t := range a.e2e.Group.StorePeerKey(ch, nick, key) {

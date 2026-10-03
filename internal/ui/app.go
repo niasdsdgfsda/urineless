@@ -58,6 +58,14 @@ type App struct {
 	expl      *explorer.Explorer
 	imgBtn    widget.Clickable
 	attClicks map[*chat.Attachment]*widget.Clickable
+	playClicks map[*chat.Attachment]*widget.Clickable
+
+	// Löschen / Selektieren
+	selectedMsgIDs    map[string]bool
+	msgClicks         map[string]*widget.Clickable
+	deleteSelectedBtn widget.Clickable
+	trashBtn          widget.Clickable
+	consumedClick     bool
 
 	// Sticker / Viewer / Paste
 	viewer     viewer
@@ -76,7 +84,10 @@ func newApp(w *app.Window) *App {
 		rowClicks: map[string]*widget.Clickable{},
 		msgLists:  map[string]*widget.List{},
 		expl:      explorer.NewExplorer(w),
-		attClicks: map[*chat.Attachment]*widget.Clickable{},
+		attClicks:      map[*chat.Attachment]*widget.Clickable{},
+		playClicks:     map[*chat.Attachment]*widget.Clickable{},
+		msgClicks:      map[string]*widget.Clickable{},
+		selectedMsgIDs: map[string]bool{},
 		picker:    newStickerPicker(),
 	}
 	_ = InitClipboard()
@@ -163,6 +174,14 @@ func (a *App) handleGlobalKeys(gtx layout.Context) {
 	a.mu.Lock()
 	conv, client := a.store.Active, a.client
 	if client == nil || conv == nil || conv.Kind == chat.Server {
+		a.mu.Unlock()
+		return
+	}
+	if txt, ok := ClipboardText(); ok && strings.TrimSpace(txt) != "" {
+		cur := a.msgEd.Text()
+		a.msgEd.SetText(cur + txt)
+		a.focusInput = true
+		a.window.Invalidate()
 		a.mu.Unlock()
 		return
 	}
@@ -265,6 +284,9 @@ func (a *App) startConnect() {
 		a.store = chat.NewStore()
 		a.msgLists = map[string]*widget.List{}
 		a.attClicks = map[*chat.Attachment]*widget.Clickable{}
+		a.playClicks = map[*chat.Attachment]*widget.Clickable{}
+		a.msgClicks = map[string]*widget.Clickable{}
+		a.selectedMsgIDs = map[string]bool{}
 		a.store.Sys(a.store.Server(), "Verbinde mit "+server+" …")
 		a.focusInput = true
 		go a.pump(c)
@@ -390,21 +412,30 @@ func (a *App) incoming(c *irc.Client, conv *chat.Conversation, ev irc.Event) {
 		if res.NeedKey {
 			a.sendEncrypted(c, ev.Nick, e2e.FormatSKReq(conv.Name))
 		}
-		if res.HasText {
+		if res.HasText && !a.handleControl(c, ev.Nick, res.Text) {
 			a.post(c, conv, ev.Nick, res.Text, ev.Time, true)
 		}
 	default:
-		a.post(c, conv, ev.Nick, ev.Text, ev.Time, false)
+		if !a.handleControl(c, ev.Nick, ev.Text) {
+			a.post(c, conv, ev.Nick, ev.Text, ev.Time, false)
+		}
 	}
 }
 
 func (a *App) post(c *irc.Client, conv *chat.Conversation, nick, text string, t time.Time, enc bool) {
+	msgID, cleanText := chat.ExtractMessageID(text)
+	if msgID == "" {
+		msgID = chat.NewMessageID()
+	}
+	text = cleanText
+
 	if strings.HasPrefix(text, "\x01ACTION ") {
 		text = "* " + nick + " " + strings.TrimSuffix(strings.TrimPrefix(text, "\x01ACTION "), "\x01")
 	}
 	msg := chat.Message{
+		ID:     msgID,
 		Sender: nick, Text: text, Time: t, Enc: enc,
-		Mine: strings.EqualFold(nick, c.Nick()),
+		Mine:   strings.EqualFold(nick, c.Nick()),
 	}
 	if att := chat.ParseAttachment(text); att != nil {
 		if msg.Mine && hasOutgoingAttachment(conv, att) {
@@ -469,8 +500,10 @@ func (a *App) submit(text string) {
 		}
 	}
 	enc := a.secure(conv)
-	a.deliver(conv, a.client, text)
-	a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true, Enc: enc})
+	msgID := chat.NewMessageID()
+	wireText := chat.FormatMessageWithID(msgID, text)
+	a.deliver(conv, a.client, wireText)
+	a.post(a.client, conv, a.client.Nick(), wireText, time.Now(), enc)
 }
 
 func (a *App) command(conv *chat.Conversation, line string) {
@@ -480,6 +513,29 @@ func (a *App) command(conv *chat.Conversation, line string) {
 	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fields[0]))
 
 	switch cmd {
+	case "delete", "del":
+		if conv.Kind == chat.Server {
+			return
+		}
+		var targetMsg *chat.Message
+		var targetIdx = -1
+		for i := len(conv.Messages) - 1; i >= 0; i-- {
+			if conv.Messages[i].Mine && !conv.Messages[i].System && conv.Messages[i].ID != "" {
+				targetMsg = &conv.Messages[i]
+				targetIdx = i
+				break
+			}
+		}
+		if targetIdx == -1 || targetMsg == nil {
+			a.store.Sys(conv, "Keine eigene Nachricht zum Löschen gefunden.")
+			return
+		}
+		msgID := targetMsg.ID
+		conv.Messages = append(conv.Messages[:targetIdx], conv.Messages[targetIdx+1:]...)
+		delPayload := "[delete:" + msgID + "]"
+		a.deliver(conv, a.client, delPayload)
+		a.store.Sys(conv, "Nachricht beidseitig gelöscht.")
+		a.window.Invalidate()
 	case "join", "j":
 		if len(args) == 0 {
 			a.store.Sys(conv, "Benutzung: /join #kanal")
@@ -509,16 +565,20 @@ func (a *App) command(conv *chat.Conversation, line string) {
 		a.focusInput = true
 		if text := strings.TrimSpace(strings.TrimPrefix(rest, args[0])); text != "" {
 			enc := a.secure(target)
-			a.deliver(target, a.client, text)
-			a.store.Post(target, chat.Message{Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true, Enc: enc})
+			msgID := chat.NewMessageID()
+			wireText := chat.FormatMessageWithID(msgID, text)
+			a.deliver(target, a.client, wireText)
+			a.store.Post(target, chat.Message{ID: msgID, Sender: a.client.Nick(), Text: text, Time: time.Now(), Mine: true, Enc: enc})
 		}
 	case "me":
 		if conv.Kind == chat.Server || rest == "" {
 			return
 		}
 		enc := a.secure(conv)
-		a.deliver(conv, a.client, "\x01ACTION "+rest+"\x01")
-		a.store.Post(conv, chat.Message{Sender: a.client.Nick(), Text: "* " + a.client.Nick() + " " + rest, Time: time.Now(), Mine: true, Enc: enc})
+		msgID := chat.NewMessageID()
+		wireText := chat.FormatMessageWithID(msgID, "\x01ACTION "+rest+"\x01")
+		a.deliver(conv, a.client, wireText)
+		a.store.Post(conv, chat.Message{ID: msgID, Sender: a.client.Nick(), Text: "* " + a.client.Nick() + " " + rest, Time: time.Now(), Mine: true, Enc: enc})
 	case "img", "image", "bild":
 		path := strings.Trim(rest, "\"' ")
 		if conv.Kind == chat.Server || path == "" {
@@ -552,4 +612,72 @@ func (a *App) command(conv *chat.Conversation, line string) {
 	default:
 		a.store.Sys(conv, "Befehle: /join #kanal, /part, /msg nick text, /me text, /img pfad, /sticker [name], /nick name, /e2e ...")
 	}
+}
+
+func (a *App) msgClick(id string) *widget.Clickable {
+	if a.msgClicks == nil {
+		a.msgClicks = map[string]*widget.Clickable{}
+	}
+	c, ok := a.msgClicks[id]
+	if !ok {
+		c = new(widget.Clickable)
+		a.msgClicks[id] = c
+	}
+	return c
+}
+
+func (a *App) attPlayClick(att *chat.Attachment) *widget.Clickable {
+	if a.playClicks == nil {
+		a.playClicks = map[*chat.Attachment]*widget.Clickable{}
+	}
+	c, ok := a.playClicks[att]
+	if !ok {
+		c = new(widget.Clickable)
+		a.playClicks[att] = c
+	}
+	return c
+}
+
+func (a *App) toggleSelectMessage(id string) {
+	if a.selectedMsgIDs == nil {
+		a.selectedMsgIDs = map[string]bool{}
+	}
+	if a.selectedMsgIDs[id] {
+		delete(a.selectedMsgIDs, id)
+	} else {
+		a.selectedMsgIDs[id] = true
+	}
+	a.window.Invalidate()
+}
+
+func (a *App) deleteSelectedMessages() {
+	if len(a.selectedMsgIDs) == 0 {
+		return
+	}
+	conv := a.store.Active
+	if conv == nil || conv.Kind == chat.Server {
+		return
+	}
+	a.store.DeleteMessages(conv, a.selectedMsgIDs)
+	for id := range a.selectedMsgIDs {
+		delPayload := "[delete:" + id + "]"
+		a.deliver(conv, a.client, delPayload)
+	}
+	a.selectedMsgIDs = map[string]bool{}
+	a.window.Invalidate()
+}
+
+func (a *App) deleteAllSentMessages() {
+	conv := a.store.Active
+	if conv == nil || conv.Kind == chat.Server {
+		return
+	}
+	deletedIDs := a.store.DeleteAllSentMessages(conv)
+	for _, id := range deletedIDs {
+		delPayload := "[delete:" + id + "]"
+		a.deliver(conv, a.client, delPayload)
+	}
+	a.selectedMsgIDs = map[string]bool{}
+	a.store.Sys(conv, "Alle gesendeten Nachrichten wurden beidseitig gelöscht.")
+	a.window.Invalidate()
 }

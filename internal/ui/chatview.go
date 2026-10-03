@@ -66,6 +66,21 @@ func (a *App) chatHeader(gtx layout.Context, conv *chat.Conversation) layout.Dim
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return a.e2eBadge(gtx, conv)
 						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if conv.Kind == chat.Server {
+								return layout.Dimensions{}
+							}
+							if a.trashBtn.Clicked(gtx) {
+								a.deleteAllSentMessages()
+							}
+							b := material.Button(a.th, &a.trashBtn, "🗑️")
+							b.Background = colorField
+							b.Color = colorDanger
+							b.CornerRadius = unit.Dp(16)
+							b.Inset = layout.Inset{Top: 5, Bottom: 5, Left: 10, Right: 10}
+							return b.Layout(gtx)
+						}),
 					)
 				})
 			})
@@ -93,6 +108,7 @@ func (a *App) e2eBadge(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 }
 
 func (a *App) messageList(gtx layout.Context, conv *chat.Conversation) layout.Dimensions {
+	a.consumedClick = false
 	list := a.listFor(conv)
 	msgs := conv.Messages
 
@@ -132,11 +148,28 @@ func (a *App) messageList(gtx layout.Context, conv *chat.Conversation) layout.Di
 				if m.Attachment != nil {
 					body = a.attachmentBody(m.Attachment)
 				}
-				return dir.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				msgClick := a.msgClick(m.ID)
+				if msgClick.Clicked(gtx) {
+					if !a.consumedClick {
+						a.toggleSelectMessage(m.ID)
+					}
+					a.consumedClick = false
+				}
+				contentW := func(gtx layout.Context) layout.Dimensions {
 					if m.Attachment != nil && m.Attachment.Sticker {
 						return StickerPost(gtx, a.th, m, showName, tag, body)
 					}
 					return Bubble(gtx, a.th, m, showName, tag, body)
+				}
+				return msgClick.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					if a.selectedMsgIDs[m.ID] {
+						return Pill(gtx, colorAccent, 18, func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return dir.Layout(gtx, contentW)
+							})
+						})
+					}
+					return dir.Layout(gtx, contentW)
 				})
 			})
 		})
@@ -171,8 +204,48 @@ func (a *App) inputBar(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 	return FillBG(gtx, colorSidebar, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			compact := gtx.Constraints.Max.X < gtx.Dp(620)
-			actions := func(gtx layout.Context) layout.Dimensions {
+			deleteBanner := func(gtx layout.Context) layout.Dimensions {
+				count := len(a.selectedMsgIDs)
+				if count == 0 {
+					return layout.Dimensions{}
+				}
+				if a.deleteSelectedBtn.Clicked(gtx) {
+					a.deleteSelectedMessages()
+				}
+				return layout.Inset{Bottom: 8}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return Pill(gtx, colorSystemBG, 12, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Top: 6, Bottom: 6, Left: 12, Right: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := "1 Nachricht ausgewählt"
+									if count > 1 {
+										lbl = itoa(count) + " Nachrichten ausgewählt"
+									}
+									l := material.Caption(a.th, lbl)
+									l.Color = colorWhite
+									l.Font.Weight = font.Bold
+									return l.Layout(gtx)
+								}),
+								layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+									return layout.Dimensions{}
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									b := material.Button(a.th, &a.deleteSelectedBtn, "Ausgewählte löschen 🗑️")
+									b.Background = colorDanger
+									b.CornerRadius = unit.Dp(12)
+									b.Inset = layout.Inset{Top: 4, Bottom: 4, Left: 10, Right: 10}
+									return b.Layout(gtx)
+								}),
+							)
+						})
+					})
+				})
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(deleteBanner),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					compact := gtx.Constraints.Max.X < gtx.Dp(620)
+					actions := func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return inputActionButton(gtx, a.th, &a.imgBtn, "Bild")
@@ -220,6 +293,8 @@ func (a *App) inputBar(gtx layout.Context, conv *chat.Conversation) layout.Dimen
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 				layout.Rigid(sendButton),
 			)
+		}),
+	)
 		})
 	})
 }

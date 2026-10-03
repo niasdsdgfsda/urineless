@@ -44,3 +44,15 @@ func ClipboardImage() (image.Image, []byte, bool) {
 	}
 	return img, data, true
 }
+
+// ClipboardText liest Text aus dem Clipboard. ok=false wenn keiner drin ist.
+func ClipboardText() (string, bool) {
+	if !clipboardReady {
+		return "", false
+	}
+	data, err := clipboard.Read(context.Background(), clipboard.FmtText)
+	if err != nil || len(data) == 0 {
+		return "", false
+	}
+	return string(data), true
+}

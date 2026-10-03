@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"time"
 
 	"strings"
@@ -23,6 +27,7 @@ import (
 	"ircgram/internal/chat"
 	"ircgram/internal/fixupx"
 	"ircgram/internal/irc"
+	"ircgram/internal/linkpreview"
 	"ircgram/internal/transfer"
 )
 
@@ -108,13 +113,74 @@ func (a *App) imageView(gtx layout.Context, att *chat.Attachment) layout.Dimensi
 	}
 	maxW := min(gtx.Constraints.Max.X, maxSize)
 	gtx.Constraints = layout.Constraints{Max: image.Pt(maxW, maxSize)}
+	_ = maxSize
 	click := a.attClick(att)
 	if click.Clicked(gtx) {
-		a.viewer.Show(att.Op, att.Image.Bounds().Size())
+		if att.Image != nil {
+			a.consumedClick = true
+			a.viewer.Show(att.Op, att.Image.Bounds().Size())
+		} else if att.URL != "" {
+			a.consumedClick = true
+			openVideoEmbedOrBrowser(att.URL)
+		}
 	}
-	dims := renderImage(gtx, func() { a.window.Invalidate() }, &att.Op, att.Image, att.Animated, att.Frames, &att.Ops, &att.FrameIdx, &att.LastUpdate)
+	playClick := a.attPlayClick(att)
+	if playClick.Clicked(gtx) {
+		a.consumedClick = true
+		openVideoEmbedOrBrowser(att.URL)
+	}
+
+	var dims layout.Dimensions
+	if att.Image != nil {
+		dims = renderImageCover(gtx, func() { a.window.Invalidate() }, &att.Op, att.Image, att.Animated, att.Frames, &att.Ops, &att.FrameIdx, &att.LastUpdate)
+	}
+	isVideo := isVideoURL(att.URL)
+
 	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return dims
+		return layout.Stack{}.Layout(gtx,
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if att.Image != nil {
+							return dims
+						}
+						return layout.Dimensions{}
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if att.Name == "" || att.Sticker {
+							return layout.Dimensions{}
+						}
+						return layout.Inset{Top: 6, Bottom: 2, Left: 4, Right: 4}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							l := material.Body2(a.th, att.Name)
+							l.Font.Weight = font.Bold
+							l.Color = colorTextMain
+							l.MaxLines = 3
+							return l.Layout(gtx)
+						})
+					}),
+				)
+			}),
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if !isVideo && att.Image != nil {
+					return layout.Dimensions{}
+				}
+				if !isVideo {
+					return layout.Dimensions{}
+				}
+				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return playClick.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return Pill(gtx, color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0xD0}, 100, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								l := material.Body1(a.th, "▶ PLAY")
+								l.Color = colorWhite
+								l.Font.Weight = font.Bold
+								return l.Layout(gtx)
+							})
+						})
+					})
+				})
+			}),
+		)
 	})
 }
 
@@ -189,12 +255,18 @@ func (a *App) pasteImageFromClipboard() {
 	if conv == nil || client == nil || conv.Kind == chat.Server {
 		return
 	}
-	_, data, ok := ClipboardImage()
-	if !ok {
-		a.store.Sys(conv, "Kein Bild im Clipboard gefunden.")
+	if txt, ok := ClipboardText(); ok && strings.TrimSpace(txt) != "" {
+		cur := a.msgEd.Text()
+		a.msgEd.SetText(cur + txt)
+		a.focusInput = true
+		a.window.Invalidate()
 		return
 	}
-	go a.sendImage(conv, client, "clipboard.png", data)
+	if _, data, ok := ClipboardImage(); ok {
+		go a.sendImage(conv, client, "clipboard.png", data)
+		return
+	}
+	a.store.Sys(conv, "Kein Text oder Bild im Clipboard gefunden.")
 }
 
 // pickImage öffnet den Dateidialog. Wird mit gehaltenem Lock aus dem Frame aufgerufen.
@@ -287,6 +359,7 @@ func (a *App) sendImageKind(conv *chat.Conversation, client *irc.Client, name st
 	}
 	enc := a.secure(conv)
 	a.store.Post(conv, chat.Message{
+		ID:     chat.NewMessageID(),
 		Sender: client.Nick(), Text: "Bild: " + name, Mine: true, Enc: enc, Attachment: att,
 	})
 	a.window.Invalidate()
@@ -360,8 +433,11 @@ func (a *App) sendImageURL(conv *chat.Conversation, client *irc.Client, u string
 	}
 	att.Sticker = true
 	enc := a.secure(conv)
-	a.deliver(conv, client, u)
+	msgID := chat.NewMessageID()
+	wireText := chat.FormatMessageWithID(msgID, u)
+	a.deliver(conv, client, wireText)
 	a.store.Post(conv, chat.Message{
+		ID:     msgID,
 		Sender: client.Nick(), Text: "Bild: " + att.Name, Mine: true, Enc: enc, Attachment: att,
 	})
 	a.window.Invalidate()
@@ -383,12 +459,29 @@ func (a *App) receiveURL(att *chat.Attachment) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		img, animated, frames, err := downloadImageURL(ctx, att.URL)
+
+		imgURL := att.URL
+		var pageTitle string
+		if preview, err := linkpreview.Fetch(ctx, att.URL); err == nil {
+			if preview.Title != "" {
+				pageTitle = preview.Title
+			}
+			if preview.ImageURL != "" {
+				imgURL = preview.ImageURL
+			}
+		}
+
+		img, animated, frames, err := downloadImageURL(ctx, imgURL)
 
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		defer a.window.Invalidate()
-		if err != nil {
+
+		if pageTitle != "" {
+			att.Name = pageTitle
+		}
+
+		if err != nil && img == nil && pageTitle == "" {
 			att.State, att.Err = chat.AttFailed, err.Error()
 			return
 		}
@@ -438,4 +531,83 @@ func isTwitterURL(u string) bool {
 		strings.Contains(lower, "fxtwitter.com") ||
 		strings.Contains(lower, "twitter.com") ||
 		strings.Contains(lower, "x.com")
+}
+
+var (
+	ytShortsRe = regexp.MustCompile(`youtube\.com/shorts/([A-Za-z0-9_-]+)`)
+	ytWatchRe  = regexp.MustCompile(`youtube\.com/watch\?v=([A-Za-z0-9_-]+)`)
+	ytBeRe     = regexp.MustCompile(`youtu\.be/([A-Za-z0-9_-]+)`)
+)
+
+func isVideoURL(rawURL string) bool {
+	lower := strings.ToLower(rawURL)
+	return strings.Contains(lower, "youtube.com") ||
+		strings.Contains(lower, "youtu.be") ||
+		strings.Contains(lower, "vimeo.com") ||
+		strings.Contains(lower, "tiktok.com") ||
+		strings.HasSuffix(lower, ".mp4") ||
+		strings.HasSuffix(lower, ".webm")
+}
+
+func GetEmbedURL(rawURL string) string {
+	if m := ytShortsRe.FindStringSubmatch(rawURL); len(m) > 1 {
+		return "https://www.youtube.com/embed/" + m[1] + "?autoplay=1"
+	}
+	if m := ytWatchRe.FindStringSubmatch(rawURL); len(m) > 1 {
+		return "https://www.youtube.com/embed/" + m[1] + "?autoplay=1"
+	}
+	if m := ytBeRe.FindStringSubmatch(rawURL); len(m) > 1 {
+		return "https://www.youtube.com/embed/" + m[1] + "?autoplay=1"
+	}
+	return rawURL
+}
+
+func openVideoEmbedOrBrowser(rawURL string) {
+	targetURL := GetEmbedURL(rawURL)
+	openFloatingWindow(targetURL)
+}
+
+func openFloatingWindow(targetURL string) {
+	if targetURL == "" {
+		return
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		browsers := []string{"chrome", "msedge", "brave"}
+		launched := false
+		for _, b := range browsers {
+			if _, err := exec.LookPath(b); err == nil {
+				cmd = exec.Command(b, "--app="+targetURL, "--user-data-dir="+os.TempDir()+"/urineless-pip", "--window-size=854,480")
+				if err := cmd.Start(); err == nil {
+					launched = true
+					break
+				}
+			}
+		}
+		if !launched {
+			exec.Command("cmd", "/c", "start", targetURL).Start()
+		}
+		return
+	case "darwin":
+		cmd = exec.Command("open", targetURL)
+		_ = cmd.Start()
+		return
+	default: // Linux / Arch
+		browsers := []string{"google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave", "microsoft-edge"}
+		launched := false
+		for _, b := range browsers {
+			if _, err := exec.LookPath(b); err == nil {
+				cmd = exec.Command(b, "--app="+targetURL, "--user-data-dir="+os.TempDir()+"/urineless-pip", "--window-size=854,480")
+				if err := cmd.Start(); err == nil {
+					launched = true
+					break
+				}
+			}
+		}
+		if !launched {
+			exec.Command("xdg-open", targetURL).Start()
+		}
+		return
+	}
 }

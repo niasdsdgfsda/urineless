@@ -46,13 +46,19 @@ func TestParseStickerWormhole(t *testing.T) {
 	}
 }
 
-func TestParseAttachmentDoesNotTreatArbitraryURLsAsImages(t *testing.T) {
+func TestParseAttachmentParsesWebURLsForPreviews(t *testing.T) {
 	for _, text := range []string{
+		"https://www.youtube.com/shorts/sko_qZzkaQ4",
 		"https://example.com/page.html",
 		"https://google.com",
 	} {
-		if att := ParseAttachment(text); att != nil {
-			t.Errorf("ParseAttachment(%q) = %#v, want nil", text, att)
+		att := ParseAttachment(text)
+		if att == nil {
+			t.Errorf("ParseAttachment(%q) = nil, want attachment", text)
+			continue
+		}
+		if att.URL != text {
+			t.Errorf("att.URL = %q, want %q", att.URL, text)
 		}
 	}
 }
