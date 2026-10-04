@@ -28,6 +28,8 @@ HTTPS GIF URLs as normal chat messages, so other IRC clients can open them and
 urineless clients can show them inline. Direct Tenor media links are also
 recognized when pasted into chat
 use this command to try it (on own risk ofc)
+
+
 docker run -it --rm \
     --env="WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
     --env="XDG_RUNTIME_DIR=/tmp/runtime-dir" \
