@@ -29,6 +29,11 @@ urineless clients can show them inline. Direct Tenor media links are also
 recognized when pasted into chat
 use this command to try it (on own risk ofc)
 
+build:
+
+docker build -t my-wayland-app .
+
+run:
 
 docker run -it --rm \
     --env="WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
