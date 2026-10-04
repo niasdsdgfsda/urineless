@@ -26,4 +26,12 @@ best-effort and can break if Tenor changes its page format. If `TENOR_API_KEY`
 is set, the client uses Tenor's official API instead. The picker sends direct
 HTTPS GIF URLs as normal chat messages, so other IRC clients can open them and
 urineless clients can show them inline. Direct Tenor media links are also
-recognized when pasted into chat.
+recognized when pasted into chat
+use this command to try it (on own risk ofc)
+docker run -it --rm \
+    --env="WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
+    --env="XDG_RUNTIME_DIR=/tmp/runtime-dir" \
+    --volume="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/tmp/runtime-dir/$WAYLAND_DISPLAY" \
+    --device=/dev/dri \
+    my-wayland-app
+
